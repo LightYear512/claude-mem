@@ -27,6 +27,7 @@ export class MigrationRunner {
     this.makeObservationsTextNullable();
     this.createUserPromptsTable();
     this.ensureDiscoveryTokensColumn();
+    this.createAIAnalysisTable(); // Migration 008
     this.createPendingMessagesTable();
     this.renameSessionIdColumns();
     this.repairSessionIdColumnRename();
@@ -262,7 +263,7 @@ export class MigrationRunner {
    */
   private addObservationHierarchicalFields(): void {
     // Check if migration already applied
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(8) as SchemaVersion | undefined;
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(12) as SchemaVersion | undefined;
     if (applied) return;
 
     // Check if new fields already exist
@@ -271,7 +272,7 @@ export class MigrationRunner {
 
     if (hasTitle) {
       // Already migrated
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(8, new Date().toISOString());
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(12, new Date().toISOString());
       return;
     }
 
@@ -289,7 +290,7 @@ export class MigrationRunner {
     `);
 
     // Record migration
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(8, new Date().toISOString());
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(12, new Date().toISOString());
 
     logger.debug('DB', 'Successfully added hierarchical fields to observations table');
   }
@@ -479,6 +480,96 @@ export class MigrationRunner {
 
     // Record migration only after successful column verification/addition
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(11, new Date().toISOString());
+  }
+
+  /**
+   * Create AI analysis table and link to observations (migration 008)
+   * Stores comprehensive AI analysis aggregating multiple observations
+   */
+  private createAIAnalysisTable(): void {
+    // Check if migration already applied
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(12) as SchemaVersion | undefined;
+    if (applied) return;
+
+    // Check if table already exists
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='ai_analysis'").all() as TableNameRow[];
+    if (tables.length > 0) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(12, new Date().toISOString());
+      return;
+    }
+
+    logger.debug('DB', 'Creating ai_analysis table with FTS5 support');
+
+    // Begin transaction
+    this.db.run('BEGIN TRANSACTION');
+
+    // Create AI analysis table
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS ai_analysis (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        memory_session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        analysis_text TEXT NOT NULL,
+        key_insights TEXT,
+        connections TEXT,
+        created_at TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        discovery_tokens INTEGER DEFAULT 0,
+        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_ai_analysis_session ON ai_analysis(memory_session_id);
+      CREATE INDEX IF NOT EXISTS idx_ai_analysis_project ON ai_analysis(project);
+      CREATE INDEX IF NOT EXISTS idx_ai_analysis_created ON ai_analysis(created_at_epoch DESC);
+    `);
+
+    // Add ai_analysis_id foreign key to observations table
+    const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasAIAnalysisId = observationsInfo.some(col => col.name === 'ai_analysis_id');
+
+    if (!hasAIAnalysisId) {
+      this.db.run(`ALTER TABLE observations ADD COLUMN ai_analysis_id INTEGER REFERENCES ai_analysis(id) ON DELETE SET NULL`);
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_ai_analysis ON observations(ai_analysis_id)`);
+    }
+
+    // Create FTS5 virtual table for ai_analysis
+    this.db.run(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS ai_analysis_fts USING fts5(
+        analysis_text,
+        key_insights,
+        connections,
+        content='ai_analysis',
+        content_rowid='id'
+      );
+    `);
+
+    // Triggers to keep ai_analysis_fts in sync
+    this.db.run(`
+      CREATE TRIGGER IF NOT EXISTS ai_analysis_ai AFTER INSERT ON ai_analysis BEGIN
+        INSERT INTO ai_analysis_fts(rowid, analysis_text, key_insights, connections)
+        VALUES (new.id, new.analysis_text, new.key_insights, new.connections);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS ai_analysis_ad AFTER DELETE ON ai_analysis BEGIN
+        INSERT INTO ai_analysis_fts(ai_analysis_fts, rowid, analysis_text, key_insights, connections)
+        VALUES('delete', old.id, old.analysis_text, old.key_insights, old.connections);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS ai_analysis_au AFTER UPDATE ON ai_analysis BEGIN
+        INSERT INTO ai_analysis_fts(ai_analysis_fts, rowid, analysis_text, key_insights, connections)
+        VALUES('delete', old.id, old.analysis_text, old.key_insights, old.connections);
+        INSERT INTO ai_analysis_fts(rowid, analysis_text, key_insights, connections)
+        VALUES (new.id, new.analysis_text, new.key_insights, new.connections);
+      END;
+    `);
+
+    // Commit transaction
+    this.db.run('COMMIT');
+
+    // Record migration
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(12, new Date().toISOString());
+
+    logger.debug('DB', 'Successfully created ai_analysis table with FTS5 support');
   }
 
   /**

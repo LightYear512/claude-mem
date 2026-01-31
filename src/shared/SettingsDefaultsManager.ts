@@ -50,6 +50,8 @@ export interface SettingsDefaults {
   // Feature Toggles
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
+  // Vector Search Configuration
+  CLAUDE_MEM_EMBEDDING_FUNCTION: string;
 }
 
 export class SettingsDefaultsManager {
@@ -94,6 +96,8 @@ export class SettingsDefaultsManager {
     // Feature Toggles
     CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
+    // Vector Search Configuration
+    CLAUDE_MEM_EMBEDDING_FUNCTION: 'default',  // default: all-MiniLM-L6-v2, or specify sentence-transformers model
   };
 
   /**

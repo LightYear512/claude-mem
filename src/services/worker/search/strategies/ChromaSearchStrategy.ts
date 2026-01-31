@@ -18,7 +18,8 @@ import {
   ChromaMetadata,
   ObservationSearchResult,
   SessionSummarySearchResult,
-  UserPromptSearchResult
+  UserPromptSearchResult,
+  AIAnalysisSearchResult
 } from '../types.js';
 import { ChromaSync } from '../../../sync/ChromaSync.js';
 import { SessionStore } from '../../../sqlite/SessionStore.js';
@@ -58,10 +59,12 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
     const searchObservations = searchType === 'all' || searchType === 'observations';
     const searchSessions = searchType === 'all' || searchType === 'sessions';
     const searchPrompts = searchType === 'all' || searchType === 'prompts';
+    const searchAIAnalyses = searchType === 'all' || searchType === 'ai_analyses';
 
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
+    let aiAnalyses: AIAnalysisSearchResult[] = [];
 
     try {
       // Build Chroma where filter for doc_type
@@ -82,7 +85,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       if (chromaResults.ids.length === 0) {
         // No matches - this is the correct answer
         return {
-          results: { observations: [], sessions: [], prompts: [] },
+          results: { observations: [], sessions: [], prompts: [], aiAnalyses: [] },
           usedChroma: true,
           fellBack: false,
           strategy: 'chroma'
@@ -99,7 +102,8 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       const categorized = this.categorizeByDocType(recentItems, {
         searchObservations,
         searchSessions,
-        searchPrompts
+        searchPrompts,
+        searchAIAnalyses
       });
 
       // Step 4: Hydrate from SQLite with additional filters
@@ -124,14 +128,21 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         });
       }
 
+      if (categorized.aiAnalysisIds.length > 0) {
+        // Get AI analyses from SessionStore
+        const allAnalyses = this.sessionStore.getRecentAIAnalyses(project!, limit);
+        aiAnalyses = allAnalyses.filter(a => categorized.aiAnalysisIds.includes(a.id));
+      }
+
       logger.debug('SEARCH', 'ChromaSearchStrategy: Hydrated results', {
         observations: observations.length,
         sessions: sessions.length,
-        prompts: prompts.length
+        prompts: prompts.length,
+        aiAnalyses: aiAnalyses.length
       });
 
       return {
-        results: { observations, sessions, prompts },
+        results: { observations, sessions, prompts, aiAnalyses },
         usedChroma: true,
         fellBack: false,
         strategy: 'chroma'
@@ -141,7 +152,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       logger.error('SEARCH', 'ChromaSearchStrategy: Search failed', {}, error as Error);
       // Return empty result - caller may try fallback strategy
       return {
-        results: { observations: [], sessions: [], prompts: [] },
+        results: { observations: [], sessions: [], prompts: [], aiAnalyses: [] },
         usedChroma: false,
         fellBack: false,
         strategy: 'chroma'
@@ -160,6 +171,8 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         return { doc_type: 'session_summary' };
       case 'prompts':
         return { doc_type: 'user_prompt' };
+      case 'ai_analyses':
+        return { doc_type: 'ai_analysis' };
       default:
         return undefined;
     }
@@ -191,11 +204,13 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       searchObservations: boolean;
       searchSessions: boolean;
       searchPrompts: boolean;
+      searchAIAnalyses: boolean;
     }
-  ): { obsIds: number[]; sessionIds: number[]; promptIds: number[] } {
+  ): { obsIds: number[]; sessionIds: number[]; promptIds: number[]; aiAnalysisIds: number[] } {
     const obsIds: number[] = [];
     const sessionIds: number[] = [];
     const promptIds: number[] = [];
+    const aiAnalysisIds: number[] = [];
 
     for (const item of items) {
       const docType = item.meta?.doc_type;
@@ -205,9 +220,11 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         sessionIds.push(item.id);
       } else if (docType === 'user_prompt' && options.searchPrompts) {
         promptIds.push(item.id);
+      } else if (docType === 'ai_analysis' && options.searchAIAnalyses) {
+        aiAnalysisIds.push(item.id);
       }
     }
 
-    return { obsIds, sessionIds, promptIds };
+    return { obsIds, sessionIds, promptIds, aiAnalysisIds };
   }
 }

@@ -19,9 +19,24 @@ export const SEARCH_CONSTANTS = {
 } as const;
 
 /**
+ * AI Analysis search result
+ */
+export interface AIAnalysisSearchResult {
+  id: number;
+  memorySessionId: string;
+  project: string;
+  analysisText: string;
+  keyInsights: string[];
+  connections: string[];
+  createdAt: string;
+  createdAtEpoch: number;
+  discoveryTokens: number;
+}
+
+/**
  * Document types stored in Chroma
  */
-export type ChromaDocType = 'observation' | 'session_summary' | 'user_prompt';
+export type ChromaDocType = 'observation' | 'session_summary' | 'user_prompt' | 'ai_analysis';
 
 /**
  * Chroma query result with typed metadata
@@ -54,7 +69,7 @@ export interface ChromaMetadata {
 /**
  * Unified search result type for all document types
  */
-export type SearchResult = ObservationSearchResult | SessionSummarySearchResult | UserPromptSearchResult;
+export type SearchResult = ObservationSearchResult | SessionSummarySearchResult | UserPromptSearchResult | AIAnalysisSearchResult;
 
 /**
  * Search results container with categorized results
@@ -63,14 +78,15 @@ export interface SearchResults {
   observations: ObservationSearchResult[];
   sessions: SessionSummarySearchResult[];
   prompts: UserPromptSearchResult[];
+  aiAnalyses: AIAnalysisSearchResult[];
 }
 
 /**
  * Extended search options for the search module
  */
 export interface ExtendedSearchOptions extends SearchOptions {
-  /** Type filter for search API (observations, sessions, prompts) */
-  searchType?: 'observations' | 'sessions' | 'prompts' | 'all';
+  /** Type filter for search API (observations, sessions, prompts, ai_analyses) */
+  searchType?: 'observations' | 'sessions' | 'prompts' | 'ai_analyses' | 'all';
   /** Observation type filter (decision, bugfix, feature, etc.) */
   obsType?: string | string[];
   /** Concept tags to filter by */
@@ -113,7 +129,7 @@ export interface StrategySearchResult {
  * Combined result type for timeline items
  */
 export interface CombinedResult {
-  type: 'observation' | 'session' | 'prompt';
+  type: 'observation' | 'session' | 'prompt' | 'ai_analysis';
   data: SearchResult;
   epoch: number;
   created_at: string;

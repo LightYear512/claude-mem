@@ -74,6 +74,18 @@ interface StoredUserPrompt {
   project: string;
 }
 
+interface StoredAIAnalysis {
+  id: number;
+  memory_session_id: string;
+  project: string;
+  analysis_text: string;
+  key_insights: string | null; // JSON
+  connections: string | null; // JSON
+  created_at: string;
+  created_at_epoch: number;
+  discovery_tokens: number;
+}
+
 export class ChromaSync {
   private client: Client | null = null;
   private transport: StdioClientTransport | null = null;
@@ -210,18 +222,29 @@ export class ChromaSync {
 
       // Only attempt creation if it's genuinely a "collection not found" error
       logger.error('CHROMA_SYNC', 'Collection check failed, attempting to create', { collection: this.collectionName }, error as Error);
-      logger.info('CHROMA_SYNC', 'Creating collection', { collection: this.collectionName });
+
+      // Load embedding function configuration
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+      const embeddingFunc = settings.CLAUDE_MEM_EMBEDDING_FUNCTION || 'default';
+
+      logger.info('CHROMA_SYNC', 'Creating collection with embedding function', {
+        collection: this.collectionName,
+        embeddingFunction: embeddingFunc
+      });
 
       try {
         await this.client.callTool({
           name: 'chroma_create_collection',
           arguments: {
             collection_name: this.collectionName,
-            embedding_function_name: 'default'
+            embedding_function_name: embeddingFunc
           }
         });
 
-        logger.info('CHROMA_SYNC', 'Collection created', { collection: this.collectionName });
+        logger.info('CHROMA_SYNC', 'Collection created', {
+          collection: this.collectionName,
+          embeddingFunction: embeddingFunc
+        });
       } catch (createError) {
         logger.error('CHROMA_SYNC', 'Failed to create collection', { collection: this.collectionName }, createError as Error);
         throw new Error(`Collection creation failed: ${createError instanceof Error ? createError.message : String(createError)}`);
@@ -517,6 +540,52 @@ export class ChromaSync {
   }
 
   /**
+   * Format AI analysis into Chroma documents (granular approach)
+   * Main analysis text, plus each insight and connection as separate documents
+   */
+  private formatAIAnalysisDocs(analysis: StoredAIAnalysis): ChromaDocument[] {
+    const documents: ChromaDocument[] = [];
+
+    const keyInsights = analysis.key_insights ? JSON.parse(analysis.key_insights) : [];
+    const connections = analysis.connections ? JSON.parse(analysis.connections) : [];
+
+    const baseMetadata: Record<string, string | number> = {
+      sqlite_id: analysis.id,
+      doc_type: 'ai_analysis',
+      memory_session_id: analysis.memory_session_id,
+      project: analysis.project,
+      created_at_epoch: analysis.created_at_epoch
+    };
+
+    // Main analysis text as primary document
+    documents.push({
+      id: `ai_analysis_${analysis.id}_text`,
+      document: analysis.analysis_text,
+      metadata: { ...baseMetadata, field_type: 'analysis_text' }
+    });
+
+    // Each key insight as separate document
+    keyInsights.forEach((insight: string, index: number) => {
+      documents.push({
+        id: `ai_analysis_${analysis.id}_insight_${index}`,
+        document: insight,
+        metadata: { ...baseMetadata, field_type: 'key_insight', insight_index: index }
+      });
+    });
+
+    // Each connection as separate document
+    connections.forEach((connection: string, index: number) => {
+      documents.push({
+        id: `ai_analysis_${analysis.id}_connection_${index}`,
+        document: connection,
+        metadata: { ...baseMetadata, field_type: 'connection', connection_index: index }
+      });
+    });
+
+    return documents;
+  }
+
+  /**
    * Sync a single user prompt to Chroma
    * Blocks until sync completes, throws on error
    * No-op on Windows (Chroma disabled to prevent console popups)
@@ -554,13 +623,55 @@ export class ChromaSync {
   }
 
   /**
+   * Sync a single AI analysis to Chroma
+   * Blocks until sync completes, throws on error
+   * No-op on Windows (Chroma disabled to prevent console popups)
+   */
+  async syncAIAnalysis(
+    analysisId: number,
+    memorySessionId: string,
+    project: string,
+    analysisText: string,
+    keyInsights: string[] = [],
+    connections: string[] = [],
+    createdAtEpoch: number,
+    discoveryTokens: number = 0
+  ): Promise<void> {
+    if (this.disabled) return;
+
+    // Create StoredAIAnalysis format
+    const stored: StoredAIAnalysis = {
+      id: analysisId,
+      memory_session_id: memorySessionId,
+      project: project,
+      analysis_text: analysisText,
+      key_insights: keyInsights.length > 0 ? JSON.stringify(keyInsights) : null,
+      connections: connections.length > 0 ? JSON.stringify(connections) : null,
+      created_at: new Date(createdAtEpoch * 1000).toISOString(),
+      created_at_epoch: createdAtEpoch,
+      discovery_tokens: discoveryTokens
+    };
+
+    const documents = this.formatAIAnalysisDocs(stored);
+
+    logger.info('CHROMA_SYNC', 'Syncing AI analysis', {
+      analysisId,
+      documentCount: documents.length,
+      project
+    });
+
+    await this.addDocuments(documents);
+  }
+
+  /**
    * Fetch all existing document IDs from Chroma collection
-   * Returns Sets of SQLite IDs for observations, summaries, and prompts
+   * Returns Sets of SQLite IDs for observations, summaries, prompts, and AI analyses
    */
   private async getExistingChromaIds(): Promise<{
     observations: Set<number>;
     summaries: Set<number>;
     prompts: Set<number>;
+    aiAnalyses: Set<number>;
   }> {
     await this.ensureConnection();
 
@@ -574,6 +685,7 @@ export class ChromaSync {
     const observationIds = new Set<number>();
     const summaryIds = new Set<number>();
     const promptIds = new Set<number>();
+    const aiAnalysisIds = new Set<number>();
 
     let offset = 0;
     const limit = 1000; // Large batches, metadata only = fast
@@ -614,6 +726,8 @@ export class ChromaSync {
               summaryIds.add(meta.sqlite_id);
             } else if (meta.doc_type === 'user_prompt') {
               promptIds.add(meta.sqlite_id);
+            } else if (meta.doc_type === 'ai_analysis') {
+              aiAnalysisIds.add(meta.sqlite_id);
             }
           }
         }
@@ -635,10 +749,16 @@ export class ChromaSync {
       project: this.project,
       observations: observationIds.size,
       summaries: summaryIds.size,
-      prompts: promptIds.size
+      prompts: promptIds.size,
+      aiAnalyses: aiAnalysisIds.size
     });
 
-    return { observations: observationIds, summaries: summaryIds, prompts: promptIds };
+    return {
+      observations: observationIds,
+      summaries: summaryIds,
+      prompts: promptIds,
+      aiAnalyses: aiAnalysisIds
+    };
   }
 
   /**
@@ -791,17 +911,60 @@ export class ChromaSync {
         });
       }
 
+      // Build exclusion list for AI analyses
+      const existingAnalysisIds = Array.from(existing.aiAnalyses);
+      const analysisExclusionClause = existingAnalysisIds.length > 0
+        ? `AND id NOT IN (${existingAnalysisIds.join(',')})`
+        : '';
+
+      // Get only AI analyses missing from Chroma
+      const analyses = db.db.prepare(`
+        SELECT * FROM ai_analysis
+        WHERE project = ? ${analysisExclusionClause}
+        ORDER BY id ASC
+      `).all(this.project) as StoredAIAnalysis[];
+
+      const totalAnalysisCount = db.db.prepare(`
+        SELECT COUNT(*) as count FROM ai_analysis WHERE project = ?
+      `).get(this.project) as { count: number };
+
+      logger.info('CHROMA_SYNC', 'Backfilling AI analyses', {
+        project: this.project,
+        missing: analyses.length,
+        existing: existing.aiAnalyses.size,
+        total: totalAnalysisCount.count
+      });
+
+      // Format all AI analysis documents
+      const analysisDocs: ChromaDocument[] = [];
+      for (const analysis of analyses) {
+        analysisDocs.push(...this.formatAIAnalysisDocs(analysis));
+      }
+
+      // Sync in batches
+      for (let i = 0; i < analysisDocs.length; i += this.BATCH_SIZE) {
+        const batch = analysisDocs.slice(i, i + this.BATCH_SIZE);
+        await this.addDocuments(batch);
+
+        logger.debug('CHROMA_SYNC', 'Backfill progress', {
+          project: this.project,
+          progress: `${Math.min(i + this.BATCH_SIZE, analysisDocs.length)}/${analysisDocs.length}`
+        });
+      }
+
       logger.info('CHROMA_SYNC', 'Smart backfill complete', {
         project: this.project,
         synced: {
           observationDocs: allDocs.length,
           summaryDocs: summaryDocs.length,
-          promptDocs: promptDocs.length
+          promptDocs: promptDocs.length,
+          analysisDocs: analysisDocs.length
         },
         skipped: {
           observations: existing.observations.size,
           summaries: existing.summaries.size,
-          prompts: existing.prompts.size
+          prompts: existing.prompts.size,
+          aiAnalyses: existing.aiAnalyses.size
         }
       });
 
@@ -891,13 +1054,15 @@ export class ChromaSync {
     const ids: number[] = [];
     const docIds = parsed.ids?.[0] || [];
     for (const docId of docIds) {
-      // Extract sqlite_id from document ID (supports three formats):
+      // Extract sqlite_id from document ID (supports four formats):
       // - obs_{id}_narrative, obs_{id}_fact_0, etc (observations)
       // - summary_{id}_request, summary_{id}_learned, etc (session summaries)
       // - prompt_{id} (user prompts)
+      // - ai_analysis_{id}_text, ai_analysis_{id}_insight_0, etc (AI analyses)
       const obsMatch = docId.match(/obs_(\d+)_/);
       const summaryMatch = docId.match(/summary_(\d+)_/);
       const promptMatch = docId.match(/prompt_(\d+)/);
+      const analysisMatch = docId.match(/ai_analysis_(\d+)_/);
 
       let sqliteId: number | null = null;
       if (obsMatch) {
@@ -906,6 +1071,8 @@ export class ChromaSync {
         sqliteId = parseInt(summaryMatch[1], 10);
       } else if (promptMatch) {
         sqliteId = parseInt(promptMatch[1], 10);
+      } else if (analysisMatch) {
+        sqliteId = parseInt(analysisMatch[1], 10);
       }
 
       if (sqliteId !== null && !ids.includes(sqliteId)) {

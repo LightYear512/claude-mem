@@ -500,6 +500,87 @@ export const migration007: Migration = {
 
 
 /**
+ * Migration 008 - Add ai_analysis table and link to observations
+ * Implements AI analysis aggregation for multiple observations
+ */
+export const migration008: Migration = {
+  version: 8,
+  up: (db: Database) => {
+    // AI analysis table - stores comprehensive analysis of multiple observations
+    db.run(`
+      CREATE TABLE IF NOT EXISTS ai_analysis (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        memory_session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        analysis_text TEXT NOT NULL,
+        key_insights TEXT,
+        connections TEXT,
+        created_at TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        discovery_tokens INTEGER DEFAULT 0,
+        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_ai_analysis_session ON ai_analysis(memory_session_id);
+      CREATE INDEX IF NOT EXISTS idx_ai_analysis_project ON ai_analysis(project);
+      CREATE INDEX IF NOT EXISTS idx_ai_analysis_created ON ai_analysis(created_at_epoch DESC);
+    `);
+
+    // Add ai_analysis_id foreign key to observations table
+    db.run(`ALTER TABLE observations ADD COLUMN ai_analysis_id INTEGER REFERENCES ai_analysis(id) ON DELETE SET NULL`);
+
+    // Create index for the foreign key
+    db.run(`CREATE INDEX IF NOT EXISTS idx_observations_ai_analysis ON observations(ai_analysis_id)`);
+
+    // Create FTS5 virtual table for ai_analysis
+    db.run(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS ai_analysis_fts USING fts5(
+        analysis_text,
+        key_insights,
+        connections,
+        content='ai_analysis',
+        content_rowid='id'
+      );
+    `);
+
+    // Triggers to keep ai_analysis_fts in sync
+    db.run(`
+      CREATE TRIGGER IF NOT EXISTS ai_analysis_ai AFTER INSERT ON ai_analysis BEGIN
+        INSERT INTO ai_analysis_fts(rowid, analysis_text, key_insights, connections)
+        VALUES (new.id, new.analysis_text, new.key_insights, new.connections);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS ai_analysis_ad AFTER DELETE ON ai_analysis BEGIN
+        INSERT INTO ai_analysis_fts(ai_analysis_fts, rowid, analysis_text, key_insights, connections)
+        VALUES('delete', old.id, old.analysis_text, old.key_insights, old.connections);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS ai_analysis_au AFTER UPDATE ON ai_analysis BEGIN
+        INSERT INTO ai_analysis_fts(ai_analysis_fts, rowid, analysis_text, key_insights, connections)
+        VALUES('delete', old.id, old.analysis_text, old.key_insights, old.connections);
+        INSERT INTO ai_analysis_fts(rowid, analysis_text, key_insights, connections)
+        VALUES (new.id, new.analysis_text, new.key_insights, new.connections);
+      END;
+    `);
+
+    console.log('✅ Created ai_analysis table and linked to observations');
+  },
+
+  down: (db: Database) => {
+    db.run(`
+      DROP TRIGGER IF EXISTS ai_analysis_au;
+      DROP TRIGGER IF EXISTS ai_analysis_ad;
+      DROP TRIGGER IF EXISTS ai_analysis_ai;
+      DROP TABLE IF EXISTS ai_analysis_fts;
+      DROP TABLE IF EXISTS ai_analysis;
+    `);
+
+    console.log('⚠️  Warning: ai_analysis_id column in observations table cannot be dropped in SQLite');
+    console.log('⚠️  To fully rollback, manually recreate the observations table');
+  }
+};
+
+/**
  * All migrations in order
  */
 export const migrations: Migration[] = [
@@ -509,5 +590,6 @@ export const migrations: Migration[] = [
   migration004,
   migration005,
   migration006,
-  migration007
+  migration007,
+  migration008
 ];

@@ -30,3 +30,6 @@ export * from './Summaries.js';
 export * from './Prompts.js';
 export * from './Timeline.js';
 export * from './Import.js';
+
+// Export AI analysis functions
+export * from './ai-analysis.js';

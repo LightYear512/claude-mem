@@ -43,6 +43,7 @@ export class SessionStore {
     this.makeObservationsTextNullable();
     this.createUserPromptsTable();
     this.ensureDiscoveryTokensColumn();
+    this.createAIAnalysisTable(); // Migration 008
     this.createPendingMessagesTable();
     this.renameSessionIdColumns();
     this.repairSessionIdColumnRename();
@@ -495,6 +496,96 @@ export class SessionStore {
 
     // Record migration only after successful column verification/addition
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(11, new Date().toISOString());
+  }
+
+  /**
+   * Create AI analysis table and link to observations (migration 12)
+   * Stores comprehensive AI analysis aggregating multiple observations
+   */
+  private createAIAnalysisTable(): void {
+    // Check if migration already applied
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(12) as SchemaVersion | undefined;
+    if (applied) return;
+
+    // Check if table already exists
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='ai_analysis'").all() as TableNameRow[];
+    if (tables.length > 0) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(12, new Date().toISOString());
+      return;
+    }
+
+    logger.debug('DB', 'Creating ai_analysis table with FTS5 support');
+
+    // Begin transaction
+    this.db.run('BEGIN TRANSACTION');
+
+    // Create AI analysis table
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS ai_analysis (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        memory_session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        analysis_text TEXT NOT NULL,
+        key_insights TEXT,
+        connections TEXT,
+        created_at TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        discovery_tokens INTEGER DEFAULT 0,
+        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_ai_analysis_session ON ai_analysis(memory_session_id);
+      CREATE INDEX IF NOT EXISTS idx_ai_analysis_project ON ai_analysis(project);
+      CREATE INDEX IF NOT EXISTS idx_ai_analysis_created ON ai_analysis(created_at_epoch DESC);
+    `);
+
+    // Add ai_analysis_id foreign key to observations table
+    const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasAIAnalysisId = observationsInfo.some(col => col.name === 'ai_analysis_id');
+
+    if (!hasAIAnalysisId) {
+      this.db.run(`ALTER TABLE observations ADD COLUMN ai_analysis_id INTEGER REFERENCES ai_analysis(id) ON DELETE SET NULL`);
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_ai_analysis ON observations(ai_analysis_id)`);
+    }
+
+    // Create FTS5 virtual table for ai_analysis
+    this.db.run(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS ai_analysis_fts USING fts5(
+        analysis_text,
+        key_insights,
+        connections,
+        content='ai_analysis',
+        content_rowid='id'
+      );
+    `);
+
+    // Triggers to keep ai_analysis_fts in sync
+    this.db.run(`
+      CREATE TRIGGER IF NOT EXISTS ai_analysis_ai AFTER INSERT ON ai_analysis BEGIN
+        INSERT INTO ai_analysis_fts(rowid, analysis_text, key_insights, connections)
+        VALUES (new.id, new.analysis_text, new.key_insights, new.connections);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS ai_analysis_ad AFTER DELETE ON ai_analysis BEGIN
+        INSERT INTO ai_analysis_fts(ai_analysis_fts, rowid, analysis_text, key_insights, connections)
+        VALUES('delete', old.id, old.analysis_text, old.key_insights, old.connections);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS ai_analysis_au AFTER UPDATE ON ai_analysis BEGIN
+        INSERT INTO ai_analysis_fts(ai_analysis_fts, rowid, analysis_text, key_insights, connections)
+        VALUES('delete', old.id, old.analysis_text, old.key_insights, old.connections);
+        INSERT INTO ai_analysis_fts(rowid, analysis_text, key_insights, connections)
+        VALUES (new.id, new.analysis_text, new.key_insights, new.connections);
+      END;
+    `);
+
+    // Commit transaction
+    this.db.run('COMMIT');
+
+    // Record migration
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(8, new Date().toISOString());
+
+    logger.debug('DB', 'Successfully created ai_analysis table with FTS5 support');
   }
 
   /**
@@ -2120,5 +2211,179 @@ export class SessionStore {
     );
 
     return { imported: true, id: result.lastInsertRowid as number };
+  }
+
+  // ============================================================================
+  // AI Analysis Operations
+  // ============================================================================
+
+  /**
+   * Store an AI analysis (comprehensive analysis of multiple observations)
+   */
+  storeAIAnalysis(
+    memorySessionId: string,
+    project: string,
+    analysisText: string,
+    keyInsights: string[] = [],
+    connections: string[] = [],
+    observationIds: number[] = [],
+    discoveryTokens: number = 0
+  ): { id: number; createdAtEpoch: number } {
+    const timestampEpoch = Date.now();
+    const timestampIso = new Date(timestampEpoch).toISOString();
+
+    const stmt = this.db.prepare(`
+      INSERT INTO ai_analysis
+      (memory_session_id, project, analysis_text, key_insights, connections,
+       discovery_tokens, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const result = stmt.run(
+      memorySessionId,
+      project,
+      analysisText,
+      keyInsights.length > 0 ? JSON.stringify(keyInsights) : null,
+      connections.length > 0 ? JSON.stringify(connections) : null,
+      discoveryTokens,
+      timestampIso,
+      timestampEpoch
+    );
+
+    const analysisId = Number(result.lastInsertRowid);
+
+    // Link observations to this analysis
+    if (observationIds.length > 0) {
+      const updateStmt = this.db.prepare(`
+        UPDATE observations
+        SET ai_analysis_id = ?
+        WHERE id = ?
+      `);
+
+      for (const obsId of observationIds) {
+        updateStmt.run(analysisId, obsId);
+      }
+
+      logger.info('DB', 'Linked observations to AI analysis', {
+        analysisId,
+        observationCount: observationIds.length,
+        project
+      });
+    }
+
+    return { id: analysisId, createdAtEpoch: timestampEpoch };
+  }
+
+  /**
+   * Get AI analysis by ID
+   */
+  getAIAnalysisById(id: number): any | null {
+    const stmt = this.db.prepare(`
+      SELECT * FROM ai_analysis
+      WHERE id = ?
+    `);
+
+    const row = stmt.get(id) as any;
+    if (!row) return null;
+
+    return {
+      id: row.id,
+      memorySessionId: row.memory_session_id,
+      project: row.project,
+      analysisText: row.analysis_text,
+      keyInsights: row.key_insights ? JSON.parse(row.key_insights) : [],
+      connections: row.connections ? JSON.parse(row.connections) : [],
+      createdAt: row.created_at,
+      createdAtEpoch: row.created_at_epoch,
+      discoveryTokens: row.discovery_tokens
+    };
+  }
+
+  /**
+   * Get recent AI analyses for a project
+   */
+  getRecentAIAnalyses(project: string, limit: number = 10): any[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM ai_analysis
+      WHERE project = ?
+      ORDER BY created_at_epoch DESC
+      LIMIT ?
+    `);
+
+    const rows = stmt.all(project, limit) as any[];
+    return rows.map(row => ({
+      id: row.id,
+      memorySessionId: row.memory_session_id,
+      project: row.project,
+      analysisText: row.analysis_text,
+      keyInsights: row.key_insights ? JSON.parse(row.key_insights) : [],
+      connections: row.connections ? JSON.parse(row.connections) : [],
+      createdAt: row.created_at,
+      createdAtEpoch: row.created_at_epoch,
+      discoveryTokens: row.discovery_tokens
+    }));
+  }
+
+  /**
+   * Get observations linked to an AI analysis
+   */
+  getObservationsForAnalysis(analysisId: number): number[] {
+    const stmt = this.db.prepare(`
+      SELECT id FROM observations
+      WHERE ai_analysis_id = ?
+      ORDER BY created_at_epoch ASC
+    `);
+
+    const rows = stmt.all(analysisId) as Array<{ id: number }>;
+    return rows.map(row => row.id);
+  }
+
+  /**
+   * Check if observations already have an AI analysis
+   */
+  getExistingAnalysisForObservations(observationIds: number[]): number | null {
+    if (observationIds.length === 0) {
+      return null;
+    }
+
+    const placeholders = observationIds.map(() => '?').join(',');
+    const stmt = this.db.prepare(`
+      SELECT DISTINCT ai_analysis_id
+      FROM observations
+      WHERE id IN (${placeholders})
+      AND ai_analysis_id IS NOT NULL
+      LIMIT 1
+    `);
+
+    const row = stmt.get(...observationIds) as { ai_analysis_id: number } | undefined;
+    return row ? row.ai_analysis_id : null;
+  }
+
+  /**
+   * Full-text search AI analyses
+   */
+  searchAIAnalyses(query: string, project: string, limit: number = 10): any[] {
+    const stmt = this.db.prepare(`
+      SELECT a.*
+      FROM ai_analysis a
+      JOIN ai_analysis_fts fts ON a.id = fts.rowid
+      WHERE ai_analysis_fts MATCH ?
+      AND a.project = ?
+      ORDER BY a.created_at_epoch DESC
+      LIMIT ?
+    `);
+
+    const rows = stmt.all(query, project, limit) as any[];
+    return rows.map(row => ({
+      id: row.id,
+      memorySessionId: row.memory_session_id,
+      project: row.project,
+      analysisText: row.analysis_text,
+      keyInsights: row.key_insights ? JSON.parse(row.key_insights) : [],
+      connections: row.connections ? JSON.parse(row.connections) : [],
+      createdAt: row.created_at,
+      createdAtEpoch: row.created_at_epoch,
+      discoveryTokens: row.discovery_tokens
+    }));
   }
 }
