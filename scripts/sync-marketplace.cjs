@@ -75,6 +75,10 @@ try {
   const version = getPluginVersion();
   const CACHE_VERSION_PATH = path.join(CACHE_BASE_PATH, version);
 
+  // Ensure cache directory exists
+  const { mkdirSync } = require('fs');
+  mkdirSync(CACHE_VERSION_PATH, { recursive: true });
+
   console.log(`Syncing to cache folder (version ${version})...`);
   execSync(
     `rsync -av --delete --exclude=.git plugin/ "${CACHE_VERSION_PATH}/"`,
