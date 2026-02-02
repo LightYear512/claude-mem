@@ -429,16 +429,14 @@ export function ContextSettingsModal({
               {formState.CLAUDE_MEM_PROVIDER === 'claude' && (
                 <FormField
                   label="Claude Model"
-                  tooltip="Claude model used for generating observations"
+                  tooltip="Model ID for Claude SDK. Examples: claude-sonnet-4-5, claude-haiku-4-5, or AWS Bedrock ARN"
                 >
-                  <select
-                    value={formState.CLAUDE_MEM_MODEL || 'haiku'}
+                  <input
+                    type="text"
+                    value={formState.CLAUDE_MEM_MODEL || 'claude-sonnet-4-5'}
                     onChange={(e) => updateSetting('CLAUDE_MEM_MODEL', e.target.value)}
-                  >
-                    <option value="haiku">haiku (fastest)</option>
-                    <option value="sonnet">sonnet (balanced)</option>
-                    <option value="opus">opus (highest quality)</option>
-                  </select>
+                    placeholder="claude-sonnet-4-5"
+                  />
                 </FormField>
               )}
 
@@ -453,6 +451,17 @@ export function ContextSettingsModal({
                       value={formState.CLAUDE_MEM_GEMINI_API_KEY || ''}
                       onChange={(e) => updateSetting('CLAUDE_MEM_GEMINI_API_KEY', e.target.value)}
                       placeholder="Enter Gemini API key..."
+                    />
+                  </FormField>
+                  <FormField
+                    label="Gemini API URL"
+                    tooltip="Custom API endpoint URL for Gemini-compatible services (or set GEMINI_API_URL env var)"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_GEMINI_API_URL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_GEMINI_API_URL', e.target.value)}
+                      placeholder="https://generativelanguage.googleapis.com/v1beta/models"
                     />
                   </FormField>
                   <FormField
