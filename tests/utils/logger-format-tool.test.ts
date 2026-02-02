@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'bun:test';
-import { logger } from '../../src/utils/logger.js';
+import { Logger } from '../../src/utils/logger.js';
+
+// Create a fresh Logger instance to bypass potential mock pollution
+// from other test files that mock the singleton 'logger' export
+const logger = new Logger();
 
 describe('logger.formatTool()', () => {
   describe('Valid JSON string input', () => {
