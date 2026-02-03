@@ -304,7 +304,11 @@ export class WorkerService {
       this.budgetController = new BudgetController(this.dbManager.getSessionStore().db);
       this.budgetController.initialize();
       this.server.registerRoutes(new BudgetRoutes(this.budgetController));
-      logger.info('BUDGET', 'BudgetController initialized and routes registered');
+
+      // Connect budget controller to agents for cost tracking
+      this.geminiAgent.setBudgetController(this.budgetController);
+      this.openRouterAgent.setBudgetController(this.budgetController);
+      logger.info('BUDGET', 'BudgetController initialized and connected to agents');
 
       // Connect to MCP server
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');

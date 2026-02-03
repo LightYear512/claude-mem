@@ -26,6 +26,8 @@ import {
   type WorkerRef,
   type FallbackAgent
 } from './agents/index.js';
+import { BudgetController } from './budget/BudgetController.js';
+import { getPresetById, calculateTokenCost } from './budget/pricing-presets.js';
 
 // OpenRouter API endpoint
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -64,6 +66,7 @@ export class OpenRouterAgent {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
   private fallbackAgent: FallbackAgent | null = null;
+  private budgetController: BudgetController | null = null;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     this.dbManager = dbManager;
@@ -76,6 +79,14 @@ export class OpenRouterAgent {
    */
   setFallbackAgent(agent: FallbackAgent): void {
     this.fallbackAgent = agent;
+  }
+
+  /**
+   * Set the budget controller for cost tracking
+   * Must be set after construction to avoid circular dependency
+   */
+  setBudgetController(controller: BudgetController): void {
+    this.budgetController = controller;
   }
 
   /**
@@ -101,7 +112,7 @@ export class OpenRouterAgent {
 
       // Add to conversation history and query OpenRouter with full context
       session.conversationHistory.push({ role: 'user', content: initPrompt });
-      const initResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
+      const initResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, session.sessionDbId);
 
       if (initResponse.content) {
         // Add response to conversation history
@@ -161,7 +172,7 @@ export class OpenRouterAgent {
 
           // Add to conversation history and query OpenRouter with full context
           session.conversationHistory.push({ role: 'user', content: obsPrompt });
-          const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
+          const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, session.sessionDbId);
 
           let tokensUsed = 0;
           if (obsResponse.content) {
@@ -198,7 +209,7 @@ export class OpenRouterAgent {
 
           // Add to conversation history and query OpenRouter with full context
           session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-          const summaryResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
+          const summaryResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, session.sessionDbId);
 
           let tokensUsed = 0;
           if (summaryResponse.content) {
@@ -323,13 +334,15 @@ export class OpenRouterAgent {
   /**
    * Query OpenRouter via REST API with full conversation history (multi-turn)
    * Sends the entire conversation context for coherent responses
+   * Integrates with BudgetController for cost tracking
    */
   private async queryOpenRouterMultiTurn(
     history: ConversationMessage[],
     apiKey: string,
     model: string,
     siteUrl?: string,
-    appName?: string
+    appName?: string,
+    sessionDbId?: number
   ): Promise<{ content: string; tokensUsed?: number }> {
     // Truncate history to prevent runaway costs
     const truncatedHistory = this.truncateHistory(history);
@@ -343,68 +356,120 @@ export class OpenRouterAgent {
       estimatedTokens
     });
 
-    const response = await fetch(OPENROUTER_API_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': siteUrl || 'https://github.com/thedotmack/claude-mem',
-        'X-Title': appName || 'claude-mem',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: 0.3,  // Lower temperature for structured extraction
-        max_tokens: 4096,
-      }),
-    });
+    // Estimate cost for budget check
+    const openrouterPreset = getPresetById('openrouter-paid');
+    const estimatedCost = openrouterPreset
+      ? calculateTokenCost(openrouterPreset, estimatedTokens, 1000)
+      : 0;
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`OpenRouter API error: ${response.status} - ${errorText}`);
+    // Reserve budget before API call
+    let txId: string | null = null;
+    if (this.budgetController) {
+      const reserveResult = this.budgetController.reserve(estimatedCost, 'openrouter', sessionDbId);
+      if (!reserveResult.success) {
+        logger.warn('BUDGET', 'OpenRouter request blocked by budget limit', {
+          reason: reserveResult.reason,
+          used: reserveResult.used,
+          limit: reserveResult.limit
+        });
+        throw new Error(`Budget limit exceeded (${reserveResult.reason}): used $${reserveResult.used?.toFixed(2)}, limit $${reserveResult.limit?.toFixed(2)}`);
+      }
+      txId = reserveResult.txId;
     }
 
-    const data = await response.json() as OpenRouterResponse;
-
-    // Check for API error in response body
-    if (data.error) {
-      throw new Error(`OpenRouter API error: ${data.error.code} - ${data.error.message}`);
-    }
-
-    if (!data.choices?.[0]?.message?.content) {
-      logger.error('SDK', 'Empty response from OpenRouter');
-      return { content: '' };
-    }
-
-    const content = data.choices[0].message.content;
-    const tokensUsed = data.usage?.total_tokens;
-
-    // Log actual token usage for cost tracking
-    if (tokensUsed) {
-      const inputTokens = data.usage?.prompt_tokens || 0;
-      const outputTokens = data.usage?.completion_tokens || 0;
-      // Token usage (cost varies by model - many OpenRouter models are free)
-      const estimatedCost = (inputTokens / 1000000 * 3) + (outputTokens / 1000000 * 15);
-
-      logger.info('SDK', 'OpenRouter API usage', {
-        model,
-        inputTokens,
-        outputTokens,
-        totalTokens: tokensUsed,
-        estimatedCostUSD: estimatedCost.toFixed(4),
-        messagesInContext: truncatedHistory.length
+    try {
+      const response = await fetch(OPENROUTER_API_URL, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'HTTP-Referer': siteUrl || 'https://github.com/thedotmack/claude-mem',
+          'X-Title': appName || 'claude-mem',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: 0.3,  // Lower temperature for structured extraction
+          max_tokens: 4096,
+        }),
       });
 
-      // Warn if costs are getting high
-      if (tokensUsed > 50000) {
-        logger.warn('SDK', 'High token usage detected - consider reducing context', {
-          totalTokens: tokensUsed,
-          estimatedCost: estimatedCost.toFixed(4)
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`OpenRouter API error: ${response.status} - ${errorText}`);
+      }
+
+      const data = await response.json() as OpenRouterResponse;
+
+      // Check for API error in response body
+      if (data.error) {
+        throw new Error(`OpenRouter API error: ${data.error.code} - ${data.error.message}`);
+      }
+
+      if (!data.choices?.[0]?.message?.content) {
+        logger.error('SDK', 'Empty response from OpenRouter');
+        // Commit with zero cost for empty responses
+        if (txId && this.budgetController) {
+          this.budgetController.commit(txId, 0, 0);
+        }
+        return { content: '' };
+      }
+
+      const content = data.choices[0].message.content;
+      const tokensUsed = data.usage?.total_tokens;
+      const inputTokens = data.usage?.prompt_tokens || 0;
+      const outputTokens = data.usage?.completion_tokens || 0;
+
+      // Commit actual cost
+      if (txId && this.budgetController) {
+        const actualCost = openrouterPreset
+          ? calculateTokenCost(openrouterPreset, inputTokens, outputTokens)
+          : 0;
+        this.budgetController.commit(txId, 0, actualCost, {
+          inputTokens,
+          outputTokens
+        });
+        logger.debug('BUDGET', 'OpenRouter cost committed', {
+          txId,
+          inputTokens,
+          outputTokens,
+          actualCost: actualCost.toFixed(6)
         });
       }
-    }
 
-    return { content, tokensUsed };
+      // Log actual token usage for cost tracking
+      if (tokensUsed) {
+        // Token usage (cost varies by model - many OpenRouter models are free)
+        const logCost = (inputTokens / 1000000 * 3) + (outputTokens / 1000000 * 15);
+
+        logger.info('SDK', 'OpenRouter API usage', {
+          model,
+          inputTokens,
+          outputTokens,
+          totalTokens: tokensUsed,
+          estimatedCostUSD: logCost.toFixed(4),
+          messagesInContext: truncatedHistory.length
+        });
+
+        // Warn if costs are getting high
+        if (tokensUsed > 50000) {
+          logger.warn('SDK', 'High token usage detected - consider reducing context', {
+            totalTokens: tokensUsed,
+            estimatedCost: logCost.toFixed(4)
+          });
+        }
+      }
+
+      return { content, tokensUsed };
+    } catch (error) {
+      // Rollback on API failure
+      if (txId && this.budgetController) {
+        const reason = (error as Error).message || 'API error';
+        this.budgetController.rollback(txId, reason);
+        logger.debug('BUDGET', 'OpenRouter cost rolled back', { txId, reason });
+      }
+      throw error;
+    }
   }
 
   /**

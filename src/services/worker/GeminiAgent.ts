@@ -26,6 +26,8 @@ import {
   type WorkerRef,
   type FallbackAgent
 } from './agents/index.js';
+import { BudgetController } from './budget/BudgetController.js';
+import { getPresetById, calculateTokenCost } from './budget/pricing-presets.js';
 
 // Gemini API endpoint (default, can be overridden via settings)
 const DEFAULT_GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
@@ -106,10 +108,19 @@ export class GeminiAgent {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
   private fallbackAgent: FallbackAgent | null = null;
+  private budgetController: BudgetController | null = null;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     this.dbManager = dbManager;
     this.sessionManager = sessionManager;
+  }
+
+  /**
+   * Set the budget controller for cost tracking
+   * Must be set after construction to avoid circular dependency
+   */
+  setBudgetController(controller: BudgetController): void {
+    this.budgetController = controller;
   }
 
   /**
@@ -143,7 +154,7 @@ export class GeminiAgent {
 
       // Add to conversation history and query Gemini with full context
       session.conversationHistory.push({ role: 'user', content: initPrompt });
-      const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, apiUrl, model, rateLimitingEnabled);
+      const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, apiUrl, model, rateLimitingEnabled, session.sessionDbId);
 
       if (initResponse.content) {
         // Add response to conversation history
@@ -203,7 +214,7 @@ export class GeminiAgent {
 
           // Add to conversation history and query Gemini with full context
           session.conversationHistory.push({ role: 'user', content: obsPrompt });
-          const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, apiUrl, model, rateLimitingEnabled);
+          const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, apiUrl, model, rateLimitingEnabled, session.sessionDbId);
 
           let tokensUsed = 0;
           if (obsResponse.content) {
@@ -240,7 +251,7 @@ export class GeminiAgent {
 
           // Add to conversation history and query Gemini with full context
           session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-          const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, apiUrl, model, rateLimitingEnabled);
+          const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, apiUrl, model, rateLimitingEnabled, session.sessionDbId);
 
           let tokensUsed = 0;
           if (summaryResponse.content) {
@@ -313,13 +324,15 @@ export class GeminiAgent {
   /**
    * Query Gemini via REST API with full conversation history (multi-turn)
    * Sends the entire conversation context for coherent responses
+   * Integrates with BudgetController for cost tracking
    */
   private async queryGeminiMultiTurn(
     history: ConversationMessage[],
     apiKey: string,
     apiUrl: string,
     model: GeminiModel,
-    rateLimitingEnabled: boolean
+    rateLimitingEnabled: boolean,
+    sessionDbId?: number
   ): Promise<{ content: string; tokensUsed?: number }> {
     const contents = this.conversationToGeminiContents(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
@@ -330,43 +343,99 @@ export class GeminiAgent {
       apiUrl: apiUrl !== DEFAULT_GEMINI_API_URL ? apiUrl : 'default'
     });
 
-    // Remove trailing slash from apiUrl to avoid double-slash issues
-    const cleanApiUrl = apiUrl.replace(/\/+$/, '');
-    const url = `${cleanApiUrl}/${model}:generateContent?key=${apiKey}`;
+    // Estimate input tokens for budget check (rough: 4 chars per token)
+    const estimatedInputTokens = Math.ceil(totalChars / 4);
+    const estimatedOutputTokens = 1000; // Conservative estimate
+    const geminiPreset = getPresetById('gemini-paid');
+    const estimatedCost = geminiPreset
+      ? calculateTokenCost(geminiPreset, estimatedInputTokens, estimatedOutputTokens)
+      : 0;
 
-    // Enforce RPM rate limit for free tier (skipped if rate limiting disabled)
-    await enforceRateLimitForModel(model, rateLimitingEnabled);
+    // Reserve budget before API call
+    let txId: string | null = null;
+    if (this.budgetController) {
+      const reserveResult = this.budgetController.reserve(estimatedCost, 'gemini', sessionDbId);
+      if (!reserveResult.success) {
+        logger.warn('BUDGET', 'Gemini request blocked by budget limit', {
+          reason: reserveResult.reason,
+          used: reserveResult.used,
+          limit: reserveResult.limit
+        });
+        throw new Error(`Budget limit exceeded (${reserveResult.reason}): used $${reserveResult.used?.toFixed(2)}, limit $${reserveResult.limit?.toFixed(2)}`);
+      }
+      txId = reserveResult.txId;
+    }
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        contents,
-        generationConfig: {
-          temperature: 0.3,  // Lower temperature for structured extraction
-          maxOutputTokens: 4096,
+    try {
+      // Remove trailing slash from apiUrl to avoid double-slash issues
+      const cleanApiUrl = apiUrl.replace(/\/+$/, '');
+      const url = `${cleanApiUrl}/${model}:generateContent?key=${apiKey}`;
+
+      // Enforce RPM rate limit for free tier (skipped if rate limiting disabled)
+      await enforceRateLimitForModel(model, rateLimitingEnabled);
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
         },
-      }),
-    });
+        body: JSON.stringify({
+          contents,
+          generationConfig: {
+            temperature: 0.3,  // Lower temperature for structured extraction
+            maxOutputTokens: 4096,
+          },
+        }),
+      });
 
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Gemini API error: ${response.status} - ${error}`);
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Gemini API error: ${response.status} - ${error}`);
+      }
+
+      const data = await response.json() as GeminiResponse;
+
+      if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
+        logger.error('SDK', 'Empty response from Gemini');
+        // Commit with zero cost for empty responses
+        if (txId && this.budgetController) {
+          this.budgetController.commit(txId, 0, 0);
+        }
+        return { content: '' };
+      }
+
+      const content = data.candidates[0].content.parts[0].text;
+      const tokensUsed = data.usageMetadata?.totalTokenCount;
+      const inputTokens = data.usageMetadata?.promptTokenCount || 0;
+      const outputTokens = data.usageMetadata?.candidatesTokenCount || 0;
+
+      // Commit actual cost
+      if (txId && this.budgetController) {
+        const actualCost = geminiPreset
+          ? calculateTokenCost(geminiPreset, inputTokens, outputTokens)
+          : 0;
+        this.budgetController.commit(txId, 0, actualCost, {
+          inputTokens,
+          outputTokens
+        });
+        logger.debug('BUDGET', 'Gemini cost committed', {
+          txId,
+          inputTokens,
+          outputTokens,
+          actualCost: actualCost.toFixed(6)
+        });
+      }
+
+      return { content, tokensUsed };
+    } catch (error) {
+      // Rollback on API failure
+      if (txId && this.budgetController) {
+        const reason = (error as Error).message || 'API error';
+        this.budgetController.rollback(txId, reason);
+        logger.debug('BUDGET', 'Gemini cost rolled back', { txId, reason });
+      }
+      throw error;
     }
-
-    const data = await response.json() as GeminiResponse;
-
-    if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
-      logger.error('SDK', 'Empty response from Gemini');
-      return { content: '' };
-    }
-
-    const content = data.candidates[0].content.parts[0].text;
-    const tokensUsed = data.usageMetadata?.totalTokenCount;
-
-    return { content, tokensUsed };
   }
 
   /**
