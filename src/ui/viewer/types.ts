@@ -92,6 +92,13 @@ export interface Settings {
 
   // Mode Configuration
   CLAUDE_MEM_MODE?: string;  // Mode profile for observation language (e.g., 'code', 'code--zh', 'code--ja')
+
+  // Budget Tracking Configuration
+  CLAUDE_MEM_BUDGET_ENABLED?: string;  // 'true' | 'false' - enable budget tracking
+  CLAUDE_MEM_BUDGET_PRESET?: string;  // Pricing preset ID (e.g., 'claude-haiku', 'claude-max', 'custom')
+  CLAUDE_MEM_BUDGET_DAILY_LIMIT?: string;  // Daily limit (USD for token billing, messages for message billing)
+  CLAUDE_MEM_BUDGET_MONTHLY_LIMIT?: string;  // Monthly limit
+  CLAUDE_MEM_BUDGET_CUSTOM_PRICING?: string;  // Custom pricing JSON (only for preset='custom')
 }
 
 export interface WorkerStats {
@@ -111,4 +118,41 @@ export interface DatabaseStats {
 export interface Stats {
   worker?: WorkerStats;
   database?: DatabaseStats;
+}
+
+// Budget Tracking Types
+export type BillingType = 'token' | 'message' | 'free';
+
+export interface BudgetStatus {
+  enabled: boolean;
+  preset: string;
+  billingType: BillingType;
+  daily: {
+    limit: number;
+    used: number;
+    remaining: number;
+    percent: number;
+  };
+  monthly: {
+    limit: number;
+    used: number;
+    remaining: number;
+    percent: number;
+  };
+}
+
+export interface PricingPreset {
+  id: string;
+  name: string;
+  billingType: BillingType;
+  pricing?: {
+    input?: number;
+    output?: number;
+    cacheCreation?: number;
+    cacheRead?: number;
+  };
+  limits?: {
+    dailyMessages?: number;
+    monthlyMessages?: number;
+  };
 }

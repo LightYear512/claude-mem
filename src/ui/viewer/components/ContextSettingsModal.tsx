@@ -714,6 +714,112 @@ export function ContextSettingsModal({
                 />
               </div>
             </CollapsibleSection>
+
+            {/* Section 5: Budget */}
+            <CollapsibleSection
+              title="Budget"
+              description="Cost tracking and limits"
+              defaultOpen={false}
+            >
+              <div className="toggle-group" style={{ marginBottom: '12px' }}>
+                <ToggleSwitch
+                  id="budget-enabled"
+                  label="Enable Budget Tracking"
+                  description="Track AI costs and enforce daily/monthly limits"
+                  checked={formState.CLAUDE_MEM_BUDGET_ENABLED === 'true'}
+                  onChange={() => toggleBoolean('CLAUDE_MEM_BUDGET_ENABLED')}
+                />
+              </div>
+
+              {formState.CLAUDE_MEM_BUDGET_ENABLED === 'true' && (
+                <>
+                  <FormField
+                    label="Pricing Preset"
+                    tooltip="Select your pricing model. Choose 'Custom' for manual price entry."
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_BUDGET_PRESET || 'claude-haiku'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_BUDGET_PRESET', e.target.value)}
+                    >
+                      <optgroup label="Claude API">
+                        <option value="claude-haiku">Claude Haiku ($0.25/$1.25 per M)</option>
+                        <option value="claude-sonnet">Claude Sonnet ($3/$15 per M)</option>
+                        <option value="claude-opus">Claude Opus ($15/$75 per M)</option>
+                      </optgroup>
+                      <optgroup label="Claude Max">
+                        <option value="claude-max">Claude Max (message-based)</option>
+                      </optgroup>
+                      <optgroup label="AWS Bedrock">
+                        <option value="bedrock-haiku">Bedrock Haiku ($0.25/$1.25 per M)</option>
+                        <option value="bedrock-sonnet">Bedrock Sonnet ($3/$15 per M)</option>
+                        <option value="bedrock-opus">Bedrock Opus ($15/$75 per M)</option>
+                      </optgroup>
+                      <optgroup label="Google">
+                        <option value="gemini-free">Gemini Free (no limits)</option>
+                        <option value="gemini-paid">Gemini Paid ($0.075/$0.30 per M)</option>
+                      </optgroup>
+                      <optgroup label="OpenRouter">
+                        <option value="openrouter-free">OpenRouter Free (no limits)</option>
+                        <option value="openrouter-paid">OpenRouter Paid (custom)</option>
+                      </optgroup>
+                      <optgroup label="Custom">
+                        <option value="custom">Custom Pricing</option>
+                      </optgroup>
+                    </select>
+                  </FormField>
+
+                  {/* Show limits for token and message billing */}
+                  {formState.CLAUDE_MEM_BUDGET_PRESET !== 'gemini-free' &&
+                   formState.CLAUDE_MEM_BUDGET_PRESET !== 'openrouter-free' && (
+                    <>
+                      <FormField
+                        label={formState.CLAUDE_MEM_BUDGET_PRESET === 'claude-max' ? 'Daily Message Limit' : 'Daily Budget ($)'}
+                        tooltip={formState.CLAUDE_MEM_BUDGET_PRESET === 'claude-max'
+                          ? 'Maximum messages per day (e.g., 100)'
+                          : 'Maximum daily spending in USD (e.g., 1.00)'}
+                      >
+                        <input
+                          type="number"
+                          min="0"
+                          step={formState.CLAUDE_MEM_BUDGET_PRESET === 'claude-max' ? '1' : '0.01'}
+                          value={formState.CLAUDE_MEM_BUDGET_DAILY_LIMIT || '1.00'}
+                          onChange={(e) => updateSetting('CLAUDE_MEM_BUDGET_DAILY_LIMIT', e.target.value)}
+                        />
+                      </FormField>
+                      <FormField
+                        label={formState.CLAUDE_MEM_BUDGET_PRESET === 'claude-max' ? 'Monthly Message Limit' : 'Monthly Budget ($)'}
+                        tooltip={formState.CLAUDE_MEM_BUDGET_PRESET === 'claude-max'
+                          ? 'Maximum messages per month (e.g., 3000)'
+                          : 'Maximum monthly spending in USD (e.g., 20.00)'}
+                      >
+                        <input
+                          type="number"
+                          min="0"
+                          step={formState.CLAUDE_MEM_BUDGET_PRESET === 'claude-max' ? '1' : '0.01'}
+                          value={formState.CLAUDE_MEM_BUDGET_MONTHLY_LIMIT || '20.00'}
+                          onChange={(e) => updateSetting('CLAUDE_MEM_BUDGET_MONTHLY_LIMIT', e.target.value)}
+                        />
+                      </FormField>
+                    </>
+                  )}
+
+                  {/* Custom pricing fields */}
+                  {formState.CLAUDE_MEM_BUDGET_PRESET === 'custom' && (
+                    <FormField
+                      label="Custom Pricing (JSON)"
+                      tooltip='Format: {"input": 0.25, "output": 1.25, "cacheCreation": 0.30, "cacheRead": 0.03}'
+                    >
+                      <input
+                        type="text"
+                        value={formState.CLAUDE_MEM_BUDGET_CUSTOM_PRICING || ''}
+                        onChange={(e) => updateSetting('CLAUDE_MEM_BUDGET_CUSTOM_PRICING', e.target.value)}
+                        placeholder='{"input": 0.25, "output": 1.25}'
+                      />
+                    </FormField>
+                  )}
+                </>
+              )}
+            </CollapsibleSection>
           </div>
         </div>
 

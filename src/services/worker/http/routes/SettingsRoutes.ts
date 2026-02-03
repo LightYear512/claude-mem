@@ -22,7 +22,8 @@ import { testOpenRouterConnection } from '../../OpenRouterAgent.js';
 
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
-    private settingsManager: SettingsManager
+    private settingsManager: SettingsManager,
+    private onSettingsUpdated?: () => void
   ) {
     super();
   }
@@ -128,6 +129,12 @@ export class SettingsRoutes extends BaseRouteHandler {
       // Feature Toggles
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      // Budget Tracking Configuration
+      'CLAUDE_MEM_BUDGET_ENABLED',
+      'CLAUDE_MEM_BUDGET_PRESET',
+      'CLAUDE_MEM_BUDGET_DAILY_LIMIT',
+      'CLAUDE_MEM_BUDGET_MONTHLY_LIMIT',
+      'CLAUDE_MEM_BUDGET_CUSTOM_PRICING',
     ];
 
     for (const key of settingKeys) {
@@ -141,6 +148,15 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     // Clear port cache to force re-reading from updated settings
     clearPortCache();
+
+    // Notify listeners (e.g., BudgetController) about settings change
+    if (this.onSettingsUpdated) {
+      try {
+        this.onSettingsUpdated();
+      } catch (error) {
+        logger.warn('SETTINGS', 'onSettingsUpdated callback failed', {}, error as Error);
+      }
+    }
 
     logger.info('WORKER', 'Settings updated');
     res.json({ success: true, message: 'Settings updated successfully' });
@@ -363,6 +379,42 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     // Skip observation concepts validation - any concept string is valid since modes define their own concepts
     // The database accepts any TEXT value, and mode-specific validation happens at parse time
+
+    // Validate Budget settings
+    if (settings.CLAUDE_MEM_BUDGET_ENABLED) {
+      if (!['true', 'false'].includes(settings.CLAUDE_MEM_BUDGET_ENABLED)) {
+        return { valid: false, error: 'CLAUDE_MEM_BUDGET_ENABLED must be "true" or "false"' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_BUDGET_DAILY_LIMIT) {
+      const limit = parseFloat(settings.CLAUDE_MEM_BUDGET_DAILY_LIMIT);
+      if (isNaN(limit) || limit < 0 || limit > 1000) {
+        return { valid: false, error: 'CLAUDE_MEM_BUDGET_DAILY_LIMIT must be between 0 and 1000' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_BUDGET_MONTHLY_LIMIT) {
+      const limit = parseFloat(settings.CLAUDE_MEM_BUDGET_MONTHLY_LIMIT);
+      if (isNaN(limit) || limit < 0 || limit > 10000) {
+        return { valid: false, error: 'CLAUDE_MEM_BUDGET_MONTHLY_LIMIT must be between 0 and 10000' };
+      }
+    }
+
+    // Validate custom pricing JSON if provided
+    if (settings.CLAUDE_MEM_BUDGET_CUSTOM_PRICING) {
+      try {
+        const pricing = JSON.parse(settings.CLAUDE_MEM_BUDGET_CUSTOM_PRICING);
+        if (typeof pricing.input !== 'number' || typeof pricing.output !== 'number') {
+          return { valid: false, error: 'CLAUDE_MEM_BUDGET_CUSTOM_PRICING must contain numeric "input" and "output" fields' };
+        }
+        if (pricing.input < 0 || pricing.input > 100 || pricing.output < 0 || pricing.output > 100) {
+          return { valid: false, error: 'Custom pricing values must be between 0 and 100 (USD per million tokens)' };
+        }
+      } catch (error) {
+        return { valid: false, error: 'CLAUDE_MEM_BUDGET_CUSTOM_PRICING must be valid JSON' };
+      }
+    }
 
     return { valid: true };
   }

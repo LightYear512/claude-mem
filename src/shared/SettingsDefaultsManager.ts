@@ -53,6 +53,12 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
   // Vector Search Configuration
   CLAUDE_MEM_EMBEDDING_FUNCTION: string;
+  // Budget Tracking Configuration
+  CLAUDE_MEM_BUDGET_ENABLED: string;  // 'true' | 'false' - enable budget tracking
+  CLAUDE_MEM_BUDGET_PRESET: string;  // Pricing preset ID (e.g., 'claude-haiku', 'claude-max', 'custom')
+  CLAUDE_MEM_BUDGET_DAILY_LIMIT: string;  // Daily limit (USD for token billing, messages for message billing)
+  CLAUDE_MEM_BUDGET_MONTHLY_LIMIT: string;  // Monthly limit
+  CLAUDE_MEM_BUDGET_CUSTOM_PRICING: string;  // Custom pricing JSON (only for preset='custom')
 }
 
 export class SettingsDefaultsManager {
@@ -100,6 +106,12 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
     // Vector Search Configuration
     CLAUDE_MEM_EMBEDDING_FUNCTION: 'default',  // default: all-MiniLM-L6-v2, or specify sentence-transformers model
+    // Budget Tracking Configuration
+    CLAUDE_MEM_BUDGET_ENABLED: 'false',  // Disabled by default
+    CLAUDE_MEM_BUDGET_PRESET: 'claude-haiku',  // Default to Claude Haiku pricing
+    CLAUDE_MEM_BUDGET_DAILY_LIMIT: '1.00',  // $1.00 default daily limit
+    CLAUDE_MEM_BUDGET_MONTHLY_LIMIT: '20.00',  // $20.00 default monthly limit
+    CLAUDE_MEM_BUDGET_CUSTOM_PRICING: '',  // Empty by default (only used with preset='custom')
   };
 
   /**

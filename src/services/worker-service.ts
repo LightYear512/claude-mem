@@ -68,6 +68,10 @@ import { DataRoutes } from './worker/http/routes/DataRoutes.js';
 import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
+import { BudgetRoutes } from './worker/http/routes/BudgetRoutes.js';
+
+// Budget tracking
+import { BudgetController } from './worker/budget/BudgetController.js';
 
 // Process management for zombie cleanup (Issue #737)
 import { startOrphanReaper, reapOrphanedProcesses } from './worker/ProcessRegistry.js';
@@ -119,6 +123,9 @@ export class WorkerService {
 
   // Route handlers
   private searchRoutes: SearchRoutes | null = null;
+
+  // Budget controller
+  private budgetController: BudgetController | null = null;
 
   // Initialization tracking
   private initializationComplete: Promise<void>;
@@ -197,7 +204,13 @@ export class WorkerService {
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
     this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this));
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
-    this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
+    // Settings routes with callback to sync budget config when settings change
+    this.server.registerRoutes(new SettingsRoutes(this.settingsManager, () => {
+      // Sync budget controller config when settings are updated
+      if (this.budgetController) {
+        this.budgetController.syncConfigToState();
+      }
+    }));
     this.server.registerRoutes(new LogsRoutes());
 
     // Early handler for /api/context/inject to avoid 404 during startup
@@ -286,6 +299,12 @@ export class WorkerService {
       this.searchRoutes = new SearchRoutes(searchManager);
       this.server.registerRoutes(this.searchRoutes);
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
+
+      // Initialize budget controller
+      this.budgetController = new BudgetController(this.dbManager.getSessionStore().db);
+      this.budgetController.initialize();
+      this.server.registerRoutes(new BudgetRoutes(this.budgetController));
+      logger.info('BUDGET', 'BudgetController initialized and routes registered');
 
       // Connect to MCP server
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
@@ -453,6 +472,14 @@ export class WorkerService {
       isProcessing,
       queueDepth
     });
+  }
+
+  /**
+   * Get the budget controller instance.
+   * Returns null if not yet initialized.
+   */
+  getBudgetController(): BudgetController | null {
+    return this.budgetController;
   }
 }
 

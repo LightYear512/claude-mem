@@ -40,4 +40,11 @@ export const DEFAULT_SETTINGS = {
 
   // Mode Configuration
   CLAUDE_MEM_MODE: 'code',
+
+  // Budget Tracking Configuration
+  CLAUDE_MEM_BUDGET_ENABLED: 'false',
+  CLAUDE_MEM_BUDGET_PRESET: 'claude-haiku',
+  CLAUDE_MEM_BUDGET_DAILY_LIMIT: '1.00',
+  CLAUDE_MEM_BUDGET_MONTHLY_LIMIT: '20.00',
+  CLAUDE_MEM_BUDGET_CUSTOM_PRICING: '',
 } as const;
