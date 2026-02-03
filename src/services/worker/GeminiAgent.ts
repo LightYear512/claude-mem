@@ -330,7 +330,9 @@ export class GeminiAgent {
       apiUrl: apiUrl !== DEFAULT_GEMINI_API_URL ? apiUrl : 'default'
     });
 
-    const url = `${apiUrl}/${model}:generateContent?key=${apiKey}`;
+    // Remove trailing slash from apiUrl to avoid double-slash issues
+    const cleanApiUrl = apiUrl.replace(/\/+$/, '');
+    const url = `${cleanApiUrl}/${model}:generateContent?key=${apiKey}`;
 
     // Enforce RPM rate limit for free tier (skipped if rate limiting disabled)
     await enforceRateLimitForModel(model, rateLimitingEnabled);
@@ -428,4 +430,116 @@ export function isGeminiSelected(): boolean {
   const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
   return settings.CLAUDE_MEM_PROVIDER === 'gemini';
+}
+
+/**
+ * Test Gemini API connection with a simple request
+ * Returns success status and latency information
+ */
+export async function testGeminiConnection(
+  apiKey: string,
+  apiUrl: string,
+  model: string
+): Promise<{ success: boolean; message: string; model?: string; latencyMs?: number }> {
+  const startTime = Date.now();
+
+  try {
+    // Remove trailing slash from apiUrl to avoid double-slash issues
+    const cleanApiUrl = apiUrl.replace(/\/+$/, '');
+    const url = `${cleanApiUrl}/${model}:generateContent?key=${apiKey}`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: 'Say OK' }] }],
+        generationConfig: {
+          temperature: 0,
+          maxOutputTokens: 50,  // Increased to handle different tokenizers
+        },
+      }),
+    });
+
+    const latencyMs = Date.now() - startTime;
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      let errorMessage = `HTTP ${response.status}`;
+
+      // Parse common error messages
+      try {
+        const errorData = JSON.parse(errorText);
+        if (errorData.error?.message) {
+          errorMessage = errorData.error.message;
+        }
+      } catch {
+        if (errorText.length < 200) {
+          errorMessage = errorText;
+        }
+      }
+
+      return {
+        success: false,
+        message: errorMessage,
+        model,
+        latencyMs,
+      };
+    }
+
+    const data = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+
+    if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
+      // Log the actual response structure for debugging
+      logger.debug('SDK', 'Gemini test response structure', {
+        hasData: !!data,
+        hasCandidates: !!data?.candidates,
+        candidatesLength: data?.candidates?.length,
+        firstCandidate: data?.candidates?.[0] ? JSON.stringify(data.candidates[0]).slice(0, 200) : 'null'
+      });
+      return {
+        success: false,
+        message: `Invalid response format from API. Response: ${JSON.stringify(data).slice(0, 100)}`,
+        model,
+        latencyMs,
+      };
+    }
+
+    return {
+      success: true,
+      message: `Connected successfully (${latencyMs}ms)`,
+      model,
+      latencyMs,
+    };
+  } catch (error) {
+    const latencyMs = Date.now() - startTime;
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    // Check for common network errors
+    if (errorMessage.includes('ECONNREFUSED') || errorMessage.includes('ENOTFOUND')) {
+      return {
+        success: false,
+        message: 'Cannot connect to API endpoint. Check URL and network.',
+        model,
+        latencyMs,
+      };
+    }
+
+    if (errorMessage.includes('fetch failed') || errorMessage.includes('Unable to connect')) {
+      return {
+        success: false,
+        message: 'Network error. API endpoint may be blocked or unreachable.',
+        model,
+        latencyMs,
+      };
+    }
+
+    return {
+      success: false,
+      message: errorMessage,
+      model,
+      latencyMs,
+    };
+  }
 }

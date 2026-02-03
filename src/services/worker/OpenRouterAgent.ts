@@ -445,3 +445,105 @@ export function isOpenRouterSelected(): boolean {
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
   return settings.CLAUDE_MEM_PROVIDER === 'openrouter';
 }
+
+/**
+ * Test OpenRouter API connection with a simple request
+ * Returns success status and latency information
+ */
+export async function testOpenRouterConnection(
+  apiKey: string,
+  model: string
+): Promise<{ success: boolean; message: string; model?: string; latencyMs?: number }> {
+  const startTime = Date.now();
+
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'HTTP-Referer': 'https://claude-mem.ai',
+        'X-Title': 'claude-mem-connection-test',
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: 'Hello, respond with just "OK"' }],
+        temperature: 0,
+        max_tokens: 10,
+      }),
+    });
+
+    const latencyMs = Date.now() - startTime;
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      let errorMessage = `HTTP ${response.status}`;
+
+      // Parse common error messages
+      try {
+        const errorData = JSON.parse(errorText);
+        if (errorData.error?.message) {
+          errorMessage = errorData.error.message;
+        }
+      } catch {
+        if (errorText.length < 200) {
+          errorMessage = errorText;
+        }
+      }
+
+      return {
+        success: false,
+        message: errorMessage,
+        model,
+        latencyMs,
+      };
+    }
+
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+
+    if (!data.choices?.[0]?.message?.content) {
+      return {
+        success: false,
+        message: 'Invalid response format from API',
+        model,
+        latencyMs,
+      };
+    }
+
+    return {
+      success: true,
+      message: `Connected successfully (${latencyMs}ms)`,
+      model,
+      latencyMs,
+    };
+  } catch (error) {
+    const latencyMs = Date.now() - startTime;
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    // Check for common network errors
+    if (errorMessage.includes('ECONNREFUSED') || errorMessage.includes('ENOTFOUND')) {
+      return {
+        success: false,
+        message: 'Cannot connect to OpenRouter API. Check network connection.',
+        model,
+        latencyMs,
+      };
+    }
+
+    if (errorMessage.includes('fetch failed') || errorMessage.includes('Unable to connect')) {
+      return {
+        success: false,
+        message: 'Network error. OpenRouter API may be unreachable.',
+        model,
+        latencyMs,
+      };
+    }
+
+    return {
+      success: false,
+      message: errorMessage,
+      model,
+      latencyMs,
+    };
+  }
+}

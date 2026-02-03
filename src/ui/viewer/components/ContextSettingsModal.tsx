@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import type { Settings } from '../types';
 import { TerminalPreview } from './TerminalPreview';
 import { useContextPreview } from '../hooks/useContextPreview';
+import { API_ENDPOINTS } from '../constants/api';
 
 interface ContextSettingsModalProps {
   isOpen: boolean;
@@ -185,11 +186,20 @@ export function ContextSettingsModal({
   saveStatus
 }: ContextSettingsModalProps) {
   const [formState, setFormState] = useState<Settings>(settings);
+  const [connectionTest, setConnectionTest] = useState<{
+    testing: boolean;
+    result?: { success: boolean; message: string; model?: string; latencyMs?: number };
+  }>({ testing: false });
 
   // Update form state when settings prop changes
   useEffect(() => {
     setFormState(settings);
   }, [settings]);
+
+  // Clear connection test result when provider changes
+  useEffect(() => {
+    setConnectionTest({ testing: false });
+  }, [formState.CLAUDE_MEM_PROVIDER]);
 
   // Get context preview based on current form state
   const { preview, isLoading, error, projects, selectedProject, setSelectedProject } = useContextPreview(formState);
@@ -226,6 +236,33 @@ export function ContextSettingsModal({
   const setAllArrayValues = useCallback((key: keyof Settings, values: string[]) => {
     updateSetting(key, values.join(','));
   }, [updateSetting]);
+
+  // Test AI provider connection
+  const testConnection = useCallback(async () => {
+    setConnectionTest({ testing: true });
+
+    try {
+      const response = await fetch(API_ENDPOINTS.SETTINGS_TEST_CONNECTION, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: formState.CLAUDE_MEM_PROVIDER,
+          settings: formState,
+        }),
+      });
+
+      const result = await response.json() as { success: boolean; message: string; model?: string; latencyMs?: number };
+      setConnectionTest({ testing: false, result });
+    } catch (error) {
+      setConnectionTest({
+        testing: false,
+        result: {
+          success: false,
+          message: error instanceof Error ? error.message : 'Connection test failed',
+        },
+      });
+    }
+  }, [formState]);
 
   // Handle ESC key
   useEffect(() => {
@@ -466,16 +503,14 @@ export function ContextSettingsModal({
                   </FormField>
                   <FormField
                     label="Gemini Model"
-                    tooltip="Gemini model used for generating observations"
+                    tooltip="Model ID for Gemini API. Examples: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-3-flash"
                   >
-                    <select
+                    <input
+                      type="text"
                       value={formState.CLAUDE_MEM_GEMINI_MODEL || 'gemini-2.5-flash-lite'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_GEMINI_MODEL', e.target.value)}
-                    >
-                      <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (10 RPM free)</option>
-                      <option value="gemini-2.5-flash">gemini-2.5-flash (5 RPM free)</option>
-                      <option value="gemini-3-flash">gemini-3-flash (5 RPM free)</option>
-                    </select>
+                      placeholder="gemini-2.5-flash-lite"
+                    />
                   </FormField>
                   <div className="toggle-group" style={{ marginTop: '8px' }}>
                     <ToggleSwitch
@@ -537,6 +572,117 @@ export function ContextSettingsModal({
                   </FormField>
                 </>
               )}
+
+              {/* Test Connection Button - show for all providers */}
+              <div className="test-connection-section" style={{ marginTop: '16px', marginBottom: '16px' }}>
+                <button
+                  type="button"
+                  className={`test-connection-btn ${connectionTest.testing ? 'testing' : ''}`}
+                  onClick={testConnection}
+                  disabled={connectionTest.testing}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: '6px',
+                    border: '1px solid var(--border-color, #444)',
+                    background: 'var(--button-bg, #333)',
+                    color: 'var(--text-color, #fff)',
+                    cursor: connectionTest.testing ? 'wait' : 'pointer',
+                    fontSize: '13px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  {connectionTest.testing ? (
+                    <>
+                      <span className="spinner" style={{
+                        width: '14px',
+                        height: '14px',
+                        border: '2px solid transparent',
+                        borderTopColor: 'currentColor',
+                        borderRadius: '50%',
+                        animation: 'spin 1s linear infinite',
+                      }} />
+                      Testing...
+                    </>
+                  ) : (
+                    <>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                        <polyline points="22 4 12 14.01 9 11.01" />
+                      </svg>
+                      Test Connection
+                    </>
+                  )}
+                </button>
+
+                {connectionTest.result && (
+                  <div
+                    className={`test-result ${connectionTest.result.success ? 'success' : 'error'}`}
+                    style={{
+                      marginTop: '8px',
+                      padding: '8px 12px',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      background: connectionTest.result.success
+                        ? 'rgba(76, 175, 80, 0.1)'
+                        : 'rgba(244, 67, 54, 0.1)',
+                      border: `1px solid ${connectionTest.result.success ? '#4caf50' : '#f44336'}`,
+                      color: connectionTest.result.success ? '#81c784' : '#e57373',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      {connectionTest.result.success ? '✓' : '✗'}
+                      <span>{connectionTest.result.message}</span>
+                    </div>
+                    {connectionTest.result.model && (
+                      <div style={{ marginTop: '4px', opacity: 0.8, fontSize: '11px' }}>
+                        Model: {connectionTest.result.model}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <FormField
+                label="Summary Language"
+                tooltip="Language for AI-generated observations and summaries. Requires worker restart."
+              >
+                <select
+                  value={formState.CLAUDE_MEM_MODE || 'code'}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_MODE', e.target.value)}
+                >
+                  <option value="code">English (Default)</option>
+                  <option value="code--zh">中文 (Chinese)</option>
+                  <option value="code--ja">日本語 (Japanese)</option>
+                  <option value="code--ko">한국어 (Korean)</option>
+                  <option value="code--es">Español (Spanish)</option>
+                  <option value="code--pt-br">Português (Portuguese)</option>
+                  <option value="code--de">Deutsch (German)</option>
+                  <option value="code--fr">Français (French)</option>
+                  <option value="code--ru">Русский (Russian)</option>
+                  <option value="code--ar">العربية (Arabic)</option>
+                  <option value="code--it">Italiano (Italian)</option>
+                  <option value="code--nl">Nederlands (Dutch)</option>
+                  <option value="code--pl">Polski (Polish)</option>
+                  <option value="code--tr">Türkçe (Turkish)</option>
+                  <option value="code--vi">Tiếng Việt (Vietnamese)</option>
+                  <option value="code--th">ไทย (Thai)</option>
+                  <option value="code--id">Bahasa Indonesia</option>
+                  <option value="code--hi">हिन्दी (Hindi)</option>
+                  <option value="code--uk">Українська (Ukrainian)</option>
+                  <option value="code--cs">Čeština (Czech)</option>
+                  <option value="code--el">Ελληνικά (Greek)</option>
+                  <option value="code--he">עברית (Hebrew)</option>
+                  <option value="code--hu">Magyar (Hungarian)</option>
+                  <option value="code--ro">Română (Romanian)</option>
+                  <option value="code--sv">Svenska (Swedish)</option>
+                  <option value="code--da">Dansk (Danish)</option>
+                  <option value="code--fi">Suomi (Finnish)</option>
+                  <option value="code--no">Norsk (Norwegian)</option>
+                  <option value="code--bn">বাংলা (Bengali)</option>
+                </select>
+              </FormField>
 
               <FormField
                 label="Worker Port"

@@ -7,6 +7,7 @@ export const API_ENDPOINTS = {
   SUMMARIES: '/api/summaries',
   PROMPTS: '/api/prompts',
   SETTINGS: '/api/settings',
+  SETTINGS_TEST_CONNECTION: '/api/settings/test-connection',
   STATS: '/api/stats',
   PROCESSING_STATUS: '/api/processing-status',
   STREAM: '/stream',

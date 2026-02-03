@@ -17,6 +17,8 @@ import { ModeManager } from '../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
+import { testGeminiConnection } from '../../GeminiAgent.js';
+import { testOpenRouterConnection } from '../../OpenRouterAgent.js';
 
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
@@ -38,6 +40,9 @@ export class SettingsRoutes extends BaseRouteHandler {
     app.get('/api/branch/status', this.handleGetBranchStatus.bind(this));
     app.post('/api/branch/switch', this.handleSwitchBranch.bind(this));
     app.post('/api/branch/update', this.handleUpdateBranch.bind(this));
+
+    // Connection test endpoint
+    app.post('/api/settings/test-connection', this.handleTestConnection.bind(this));
   }
 
   /**
@@ -92,6 +97,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       // AI Provider Configuration
       'CLAUDE_MEM_PROVIDER',
       'CLAUDE_MEM_GEMINI_API_KEY',
+      'CLAUDE_MEM_GEMINI_API_URL',
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
       // OpenRouter Configuration
@@ -106,6 +112,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
       'CLAUDE_CODE_PATH',
+      'CLAUDE_MEM_MODE',
       // Token Economics
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
@@ -239,13 +246,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    // Validate CLAUDE_MEM_GEMINI_MODEL
-    if (settings.CLAUDE_MEM_GEMINI_MODEL) {
-      const validGeminiModels = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-3-flash'];
-      if (!validGeminiModels.includes(settings.CLAUDE_MEM_GEMINI_MODEL)) {
-        return { valid: false, error: 'CLAUDE_MEM_GEMINI_MODEL must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-3-flash' };
-      }
-    }
+    // Skip CLAUDE_MEM_GEMINI_MODEL validation - model names change frequently
+    // and custom API endpoints may support different models.
+    // GeminiAgent.ts will log a warning if an unknown model is used with the default API.
 
     // Validate CLAUDE_MEM_CONTEXT_OBSERVATIONS
     if (settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
@@ -411,4 +414,71 @@ export class SettingsRoutes extends BaseRouteHandler {
       logger.info('SETTINGS', 'Created settings file with defaults', { settingsPath });
     }
   }
+
+  /**
+   * POST /api/settings/test-connection - Test AI provider connection
+   * Body: { provider: 'claude' | 'gemini' | 'openrouter', settings: {...} }
+   *
+   * Tests the connection with the provided settings (not saved settings).
+   * This allows testing before saving.
+   */
+  private handleTestConnection = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { provider, settings } = req.body;
+
+    if (!provider) {
+      res.status(400).json({ success: false, error: 'Missing provider parameter' });
+      return;
+    }
+
+    logger.info('SETTINGS', 'Testing connection', { provider });
+
+    try {
+      let result: { success: boolean; message: string; model?: string; latencyMs?: number };
+
+      switch (provider) {
+        case 'claude':
+          // Claude uses Agent SDK which requires OAuth - can't easily test without actual session
+          result = {
+            success: true,
+            message: 'Claude provider uses your Claude account. Connection will be tested when generating observations.'
+          };
+          break;
+
+        case 'gemini':
+          const geminiApiKey = settings?.CLAUDE_MEM_GEMINI_API_KEY || '';
+          const geminiApiUrl = settings?.CLAUDE_MEM_GEMINI_API_URL || 'https://generativelanguage.googleapis.com/v1beta/models';
+          const geminiModel = settings?.CLAUDE_MEM_GEMINI_MODEL || 'gemini-2.5-flash-lite';
+
+          if (!geminiApiKey) {
+            result = { success: false, message: 'Gemini API key is required' };
+          } else {
+            result = await testGeminiConnection(geminiApiKey, geminiApiUrl, geminiModel);
+          }
+          break;
+
+        case 'openrouter':
+          const openrouterApiKey = settings?.CLAUDE_MEM_OPENROUTER_API_KEY || '';
+          const openrouterModel = settings?.CLAUDE_MEM_OPENROUTER_MODEL || 'xiaomi/mimo-v2-flash:free';
+
+          if (!openrouterApiKey) {
+            result = { success: false, message: 'OpenRouter API key is required' };
+          } else {
+            result = await testOpenRouterConnection(openrouterApiKey, openrouterModel);
+          }
+          break;
+
+        default:
+          result = { success: false, message: `Unknown provider: ${provider}` };
+      }
+
+      res.json(result);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error('SETTINGS', 'Connection test failed', { provider }, error as Error);
+      res.json({
+        success: false,
+        message: `Connection failed: ${errorMessage}`
+      });
+    }
+  });
 }
