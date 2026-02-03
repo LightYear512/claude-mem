@@ -306,6 +306,7 @@ export class WorkerService {
       this.server.registerRoutes(new BudgetRoutes(this.budgetController));
 
       // Connect budget controller to agents for cost tracking
+      this.sdkAgent.setBudgetController(this.budgetController);
       this.geminiAgent.setBudgetController(this.budgetController);
       this.openRouterAgent.setBudgetController(this.budgetController);
       logger.info('BUDGET', 'BudgetController initialized and connected to agents');

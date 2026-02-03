@@ -21,6 +21,8 @@ import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
 import { createPidCapturingSpawn, getProcessBySession, ensureProcessExit } from './ProcessRegistry.js';
+import { BudgetController } from './budget/BudgetController.js';
+import { getPresetById, calculateTokenCost } from './budget/pricing-presets.js';
 
 // Import Agent SDK (assumes it's installed)
 // @ts-ignore - Agent SDK types may not be available
@@ -29,10 +31,19 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 export class SDKAgent {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
+  private budgetController: BudgetController | null = null;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     this.dbManager = dbManager;
     this.sessionManager = sessionManager;
+  }
+
+  /**
+   * Set the budget controller for cost tracking
+   * Must be set after construction to avoid circular dependency
+   */
+  setBudgetController(controller: BudgetController): void {
+    this.budgetController = controller;
   }
 
   /**
@@ -43,6 +54,37 @@ export class SDKAgent {
     // Track cwd from messages for CLAUDE.md generation (worktree support)
     // Uses mutable object so generator updates are visible in response processing
     const cwdTracker = { lastCwd: undefined as string | undefined };
+
+    // Budget tracking: SDK manages API calls internally, so we track costs per response
+    // rather than using two-phase commit like Gemini/OpenRouter
+    let sessionTxId: string | null = null;
+    let sessionTotalCostUsd = 0;
+
+    // Check budget availability before starting session
+    if (this.budgetController) {
+      // Estimate session cost (conservative: ~5000 tokens typical session)
+      const claudePreset = getPresetById('claude-haiku');
+      const estimatedCost = claudePreset
+        ? calculateTokenCost(claudePreset, 3000, 2000)  // 3k input, 2k output estimate
+        : 0.01;
+
+      const reserveResult = this.budgetController.reserve(estimatedCost, 'claude', session.sessionDbId);
+      if (!reserveResult.success) {
+        logger.warn('BUDGET', 'SDK session blocked by budget limit', {
+          reason: reserveResult.reason,
+          used: reserveResult.used,
+          limit: reserveResult.limit,
+          sessionDbId: session.sessionDbId
+        });
+        throw new Error(`Budget limit exceeded (${reserveResult.reason}): used $${reserveResult.used?.toFixed(2)}, limit $${reserveResult.limit?.toFixed(2)}`);
+      }
+      sessionTxId = reserveResult.txId;
+      logger.debug('BUDGET', 'SDK session budget reserved', {
+        sessionDbId: session.sessionDbId,
+        txId: sessionTxId,
+        estimatedCost: estimatedCost.toFixed(6)
+      });
+    }
 
     // Find Claude executable
     const claudePath = this.findClaudeExecutable();
@@ -123,6 +165,7 @@ export class SDKAgent {
     });
 
     // Process SDK messages
+    try {
     for await (const message of queryResult) {
       // Capture memory session ID from first SDK message (any type has session_id)
       // This enables resume for subsequent generator starts within the same user session
@@ -164,22 +207,43 @@ export class SDKAgent {
         // Extract and track token usage
         const usage = message.message.usage;
         if (usage) {
-          session.cumulativeInputTokens += usage.input_tokens || 0;
-          session.cumulativeOutputTokens += usage.output_tokens || 0;
+          const inputTokens = usage.input_tokens || 0;
+          const outputTokens = usage.output_tokens || 0;
+          const cacheCreationTokens = usage.cache_creation_input_tokens || 0;
+          const cacheReadTokens = usage.cache_read_input_tokens || 0;
+
+          session.cumulativeInputTokens += inputTokens;
+          session.cumulativeOutputTokens += outputTokens;
 
           // Cache creation counts as discovery, cache read doesn't
-          if (usage.cache_creation_input_tokens) {
-            session.cumulativeInputTokens += usage.cache_creation_input_tokens;
+          if (cacheCreationTokens) {
+            session.cumulativeInputTokens += cacheCreationTokens;
+          }
+
+          // Track cost for budget
+          if (this.budgetController) {
+            const claudePreset = getPresetById('claude-haiku');
+            if (claudePreset) {
+              const responseCost = calculateTokenCost(
+                claudePreset,
+                inputTokens,
+                outputTokens,
+                cacheCreationTokens,
+                cacheReadTokens
+              );
+              sessionTotalCostUsd += responseCost;
+            }
           }
 
           logger.debug('SDK', 'Token usage captured', {
             sessionId: session.sessionDbId,
-            inputTokens: usage.input_tokens,
-            outputTokens: usage.output_tokens,
-            cacheCreation: usage.cache_creation_input_tokens || 0,
-            cacheRead: usage.cache_read_input_tokens || 0,
+            inputTokens,
+            outputTokens,
+            cacheCreation: cacheCreationTokens,
+            cacheRead: cacheReadTokens,
             cumulativeInput: session.cumulativeInputTokens,
-            cumulativeOutput: session.cumulativeOutputTokens
+            cumulativeOutput: session.cumulativeOutputTokens,
+            sessionTotalCostUsd: sessionTotalCostUsd.toFixed(6)
           });
         }
 
@@ -220,12 +284,42 @@ export class SDKAgent {
       }
     }
 
+    // Commit budget with actual cost
+    if (sessionTxId && this.budgetController) {
+      this.budgetController.commit(sessionTxId, 0, sessionTotalCostUsd, {
+        inputTokens: session.cumulativeInputTokens,
+        outputTokens: session.cumulativeOutputTokens
+      });
+      logger.debug('BUDGET', 'SDK session cost committed', {
+        sessionDbId: session.sessionDbId,
+        txId: sessionTxId,
+        actualCost: sessionTotalCostUsd.toFixed(6),
+        totalInputTokens: session.cumulativeInputTokens,
+        totalOutputTokens: session.cumulativeOutputTokens
+      });
+    }
+
     // Mark session complete
     const sessionDuration = Date.now() - session.startTime;
     logger.success('SDK', 'Agent completed', {
       sessionId: session.sessionDbId,
-      duration: `${(sessionDuration / 1000).toFixed(1)}s`
+      duration: `${(sessionDuration / 1000).toFixed(1)}s`,
+      totalCostUsd: sessionTotalCostUsd.toFixed(6)
     });
+
+    } catch (error) {
+      // Rollback budget on SDK failure
+      if (sessionTxId && this.budgetController) {
+        const reason = (error as Error).message || 'SDK error';
+        this.budgetController.rollback(sessionTxId, reason);
+        logger.debug('BUDGET', 'SDK session cost rolled back', {
+          sessionDbId: session.sessionDbId,
+          txId: sessionTxId,
+          reason
+        });
+      }
+      throw error;
+    }
   }
 
   /**
