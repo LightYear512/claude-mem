@@ -48,6 +48,7 @@ export class SessionStore {
     this.renameSessionIdColumns();
     this.repairSessionIdColumnRename();
     this.addFailedAtEpochColumn();
+    this.createBudgetTables();
   }
 
   /**
@@ -734,6 +735,120 @@ export class SessionStore {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(20, new Date().toISOString());
+  }
+
+  /**
+   * Create budget tracking tables (migration 21)
+   * Implements cost tracking with two-phase commit and optimistic locking
+   */
+  private createBudgetTables(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(21) as SchemaVersion | undefined;
+    if (applied) return;
+
+    // Check if budget_state table already exists
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='budget_state'").all() as TableNameRow[];
+    if (tables.length > 0) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
+      return;
+    }
+
+    logger.debug('DB', 'Creating budget tracking tables');
+
+    // Begin transaction
+    this.db.run('BEGIN TRANSACTION');
+
+    // budget_state table - single-row global state with optimistic lock
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS budget_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        budget_date TEXT NOT NULL,
+        budget_month TEXT NOT NULL,
+        spent_today_micros INTEGER NOT NULL DEFAULT 0,
+        spent_month_micros INTEGER NOT NULL DEFAULT 0,
+        daily_limit_micros INTEGER NOT NULL DEFAULT 1000000,
+        monthly_limit_micros INTEGER NOT NULL DEFAULT 20000000,
+        version INTEGER NOT NULL DEFAULT 1,
+        last_update_epoch INTEGER NOT NULL,
+        CONSTRAINT spent_today_not_negative CHECK (spent_today_micros >= 0),
+        CONSTRAINT spent_month_not_negative CHECK (spent_month_micros >= 0)
+      )
+    `);
+
+    // budget_transactions table - two-phase commit tracking
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS budget_transactions (
+        id TEXT PRIMARY KEY,
+        phase TEXT NOT NULL CHECK (phase IN ('reserved', 'committed', 'rolled_back')),
+        cost_micros INTEGER NOT NULL,
+        provider TEXT NOT NULL,
+        observation_id INTEGER,
+        session_db_id INTEGER,
+        created_at_epoch INTEGER NOT NULL,
+        committed_at_epoch INTEGER,
+        rolled_back_at_epoch INTEGER,
+        error_reason TEXT,
+        FOREIGN KEY(observation_id) REFERENCES observations(id) ON DELETE SET NULL,
+        FOREIGN KEY(session_db_id) REFERENCES sdk_sessions(id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_budget_tx_phase ON budget_transactions(phase);
+      CREATE INDEX IF NOT EXISTS idx_budget_tx_created ON budget_transactions(created_at_epoch);
+      CREATE INDEX IF NOT EXISTS idx_budget_tx_session ON budget_transactions(session_db_id)
+    `);
+
+    // budget_records table - historical cost records
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS budget_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date_key TEXT NOT NULL,
+        month_key TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        session_db_id INTEGER,
+        observation_id INTEGER,
+        input_tokens INTEGER DEFAULT 0,
+        output_tokens INTEGER DEFAULT 0,
+        cache_creation_tokens INTEGER DEFAULT 0,
+        cache_read_tokens INTEGER DEFAULT 0,
+        cost_micros INTEGER NOT NULL,
+        price_input_per_m REAL,
+        price_output_per_m REAL,
+        created_at_epoch INTEGER NOT NULL,
+        FOREIGN KEY(session_db_id) REFERENCES sdk_sessions(id) ON DELETE SET NULL,
+        FOREIGN KEY(observation_id) REFERENCES observations(id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_budget_records_date ON budget_records(date_key);
+      CREATE INDEX IF NOT EXISTS idx_budget_records_month ON budget_records(month_key);
+      CREATE INDEX IF NOT EXISTS idx_budget_records_provider ON budget_records(provider);
+      CREATE INDEX IF NOT EXISTS idx_budget_records_session ON budget_records(session_db_id)
+    `);
+
+    // Initialize budget_state with default values (single row)
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const month = today.substring(0, 7);
+
+    this.db.prepare(`
+      INSERT OR IGNORE INTO budget_state (
+        id, budget_date, budget_month,
+        spent_today_micros, spent_month_micros,
+        daily_limit_micros, monthly_limit_micros,
+        version, last_update_epoch
+      ) VALUES (
+        1, ?, ?,
+        0, 0,
+        1000000, 20000000,
+        1, ?
+      )
+    `).run(today, month, Date.now());
+
+    // Commit transaction
+    this.db.run('COMMIT');
+
+    // Record migration
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
+
+    logger.debug('DB', 'Successfully created budget tracking tables');
   }
 
   /**
