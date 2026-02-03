@@ -217,7 +217,7 @@ export class SDKAgent {
           }
 
           // Track cost for budget (using BudgetController's configured preset)
-          if (this.budgetController) {
+          if (this.budgetController && this.budgetController.isTrackingEnabled()) {
             const responseCost = this.budgetController.calculateCost(
               inputTokens,
               outputTokens,
