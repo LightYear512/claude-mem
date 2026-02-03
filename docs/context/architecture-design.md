@@ -404,37 +404,42 @@ function calculatePriority(task: AnalysisTask): number {
 
 **职责:** 管理 AI 分析预算
 
+**实现状态:** ✅ 已完成 (详见 `docs/context/budget-module-implementation.md`)
+
 ```typescript
-interface BudgetController {
-  /**
-   * 检查是否可以负担分析
-   */
-  canAffordAnalysis(estimatedCost: number): Promise<boolean>;
+class BudgetController {
+  // 两阶段提交核心方法
+  reserve(estimatedCost: number, provider: string, sessionDbId?: number): ReserveResult;
+  commit(txId: string, adjustmentMicros?: number, actualCostUsd?: number, metadata?: object): boolean;
+  rollback(txId: string, reason?: string): boolean;
 
-  /**
-   * 记录实际成本
-   */
-  recordCost(actualCost: number): Promise<void>;
+  // 成本计算（使用配置的 preset）
+  calculateCost(inputTokens: number, outputTokens: number, cacheCreation?: number, cacheRead?: number): number;
+  estimateCost(estimatedInputTokens: number, outputRatio?: number): number;
+  isTrackingEnabled(): boolean;
 
-  /**
-   * 获取今日/本月花费
-   */
-  getSpending(period: 'today' | 'month'): Promise<number>;
-
-  /**
-   * 预测月度总成本
-   */
-  forecastMonthlyCost(): Promise<number>;
+  // 配置和统计
+  getConfig(): BudgetConfig;
+  getCurrentPreset(): PricingPreset;
+  getStatistics(): BudgetStatistics;
 }
 
-// 预算配置
+// 预算配置 (settings.json)
 const BUDGET_CONFIG = {
-  dailyBudgetUsd: 1.0,
-  monthlyBudgetUsd: 20.0,
-  alertThreshold: 0.8,  // 80% 时告警
-  hardLimit: true       // 达到预算时停止
+  CLAUDE_MEM_BUDGET_ENABLED: true,
+  CLAUDE_MEM_BUDGET_BILLING_TYPE: 'paid',       // 'free' | 'paid'
+  CLAUDE_MEM_BUDGET_PRESET: 'claude-haiku',
+  CLAUDE_MEM_BUDGET_DAILY_LIMIT_USD: 1.0,
+  CLAUDE_MEM_BUDGET_MONTHLY_LIMIT_USD: 20.0,
+  CLAUDE_MEM_BUDGET_ALERT_THRESHOLD: 0.8        // 80% 时告警
 };
 ```
+
+**关键设计:**
+- **两阶段提交:** reserve → API call → commit/rollback
+- **乐观锁 + 重试:** 并发安全，最多 3 次重试
+- **集中化成本计算:** 所有 Agent 使用 BudgetController 的方法
+- **Free Tier 支持:** `billingType === 'free'` 时完全跳过成本跟踪
 
 #### RateLimiter - 限流器
 
