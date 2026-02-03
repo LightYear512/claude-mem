@@ -22,7 +22,6 @@ import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
 import { createPidCapturingSpawn, getProcessBySession, ensureProcessExit } from './ProcessRegistry.js';
 import { BudgetController } from './budget/BudgetController.js';
-import { getPresetById, calculateTokenCost } from './budget/pricing-presets.js';
 
 // Import Agent SDK (assumes it's installed)
 // @ts-ignore - Agent SDK types may not be available
@@ -60,13 +59,10 @@ export class SDKAgent {
     let sessionTxId: string | null = null;
     let sessionTotalCostUsd = 0;
 
-    // Check budget availability before starting session
-    if (this.budgetController) {
+    // Check budget availability before starting session (using BudgetController's configured preset)
+    if (this.budgetController && this.budgetController.isTrackingEnabled()) {
       // Estimate session cost (conservative: ~5000 tokens typical session)
-      const claudePreset = getPresetById('claude-haiku');
-      const estimatedCost = claudePreset
-        ? calculateTokenCost(claudePreset, 3000, 2000)  // 3k input, 2k output estimate
-        : 0.01;
+      const estimatedCost = this.budgetController.estimateCost(5000); // 5k tokens estimate
 
       const reserveResult = this.budgetController.reserve(estimatedCost, 'claude', session.sessionDbId);
       if (!reserveResult.success) {
@@ -220,19 +216,15 @@ export class SDKAgent {
             session.cumulativeInputTokens += cacheCreationTokens;
           }
 
-          // Track cost for budget
+          // Track cost for budget (using BudgetController's configured preset)
           if (this.budgetController) {
-            const claudePreset = getPresetById('claude-haiku');
-            if (claudePreset) {
-              const responseCost = calculateTokenCost(
-                claudePreset,
-                inputTokens,
-                outputTokens,
-                cacheCreationTokens,
-                cacheReadTokens
-              );
-              sessionTotalCostUsd += responseCost;
-            }
+            const responseCost = this.budgetController.calculateCost(
+              inputTokens,
+              outputTokens,
+              cacheCreationTokens,
+              cacheReadTokens
+            );
+            sessionTotalCostUsd += responseCost;
           }
 
           logger.debug('SDK', 'Token usage captured', {

@@ -27,7 +27,6 @@ import {
   type FallbackAgent
 } from './agents/index.js';
 import { BudgetController } from './budget/BudgetController.js';
-import { getPresetById, calculateTokenCost } from './budget/pricing-presets.js';
 
 // Gemini API endpoint (default, can be overridden via settings)
 const DEFAULT_GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
@@ -343,17 +342,13 @@ export class GeminiAgent {
       apiUrl: apiUrl !== DEFAULT_GEMINI_API_URL ? apiUrl : 'default'
     });
 
-    // Estimate input tokens for budget check (rough: 4 chars per token)
-    const estimatedInputTokens = Math.ceil(totalChars / 4);
-    const estimatedOutputTokens = 1000; // Conservative estimate
-    const geminiPreset = getPresetById('gemini-paid');
-    const estimatedCost = geminiPreset
-      ? calculateTokenCost(geminiPreset, estimatedInputTokens, estimatedOutputTokens)
-      : 0;
-
-    // Reserve budget before API call
+    // Reserve budget before API call (using BudgetController's configured preset)
     let txId: string | null = null;
-    if (this.budgetController) {
+    if (this.budgetController && this.budgetController.isTrackingEnabled()) {
+      // Estimate input tokens (rough: 4 chars per token)
+      const estimatedInputTokens = Math.ceil(totalChars / 4);
+      const estimatedCost = this.budgetController.estimateCost(estimatedInputTokens);
+
       const reserveResult = this.budgetController.reserve(estimatedCost, 'gemini', sessionDbId);
       if (!reserveResult.success) {
         logger.warn('BUDGET', 'Gemini request blocked by budget limit', {
@@ -409,11 +404,9 @@ export class GeminiAgent {
       const inputTokens = data.usageMetadata?.promptTokenCount || 0;
       const outputTokens = data.usageMetadata?.candidatesTokenCount || 0;
 
-      // Commit actual cost
+      // Commit actual cost using BudgetController's configured preset
       if (txId && this.budgetController) {
-        const actualCost = geminiPreset
-          ? calculateTokenCost(geminiPreset, inputTokens, outputTokens)
-          : 0;
+        const actualCost = this.budgetController.calculateCost(inputTokens, outputTokens);
         this.budgetController.commit(txId, 0, actualCost, {
           inputTokens,
           outputTokens

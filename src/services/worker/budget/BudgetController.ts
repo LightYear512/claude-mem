@@ -13,7 +13,7 @@ import { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
-import { getPresetById, getDefaultPreset, type PricingPreset } from './pricing-presets.js';
+import { getPresetById, getDefaultPreset, calculateTokenCost, type PricingPreset } from './pricing-presets.js';
 import {
   type TimeProvider,
   type BudgetState,
@@ -589,5 +589,61 @@ export class BudgetController {
   getCurrentPreset(): PricingPreset {
     const config = this.getConfig();
     return getPresetById(config.preset) ?? getDefaultPreset();
+  }
+
+  /**
+   * Calculate cost using current preset configuration.
+   * Returns 0 if budget tracking is disabled or billing type is free.
+   *
+   * @param inputTokens - Number of input tokens
+   * @param outputTokens - Number of output tokens
+   * @param cacheCreationTokens - Cache creation tokens (optional)
+   * @param cacheReadTokens - Cache read tokens (optional)
+   * @returns Cost in USD
+   */
+  calculateCost(
+    inputTokens: number,
+    outputTokens: number,
+    cacheCreationTokens: number = 0,
+    cacheReadTokens: number = 0
+  ): number {
+    const config = this.getConfig();
+
+    // No cost tracking if disabled or free tier
+    if (!config.enabled || config.billingType === 'free') {
+      return 0;
+    }
+
+    const preset = this.getCurrentPreset();
+    return calculateTokenCost(preset, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens);
+  }
+
+  /**
+   * Estimate cost before API call (for budget reservation).
+   * Uses conservative output estimate.
+   *
+   * @param estimatedInputTokens - Estimated input tokens
+   * @param outputRatio - Expected output/input ratio (default 0.5)
+   * @returns Estimated cost in USD
+   */
+  estimateCost(estimatedInputTokens: number, outputRatio: number = 0.5): number {
+    const config = this.getConfig();
+
+    // No cost tracking if disabled or free tier
+    if (!config.enabled || config.billingType === 'free') {
+      return 0;
+    }
+
+    const estimatedOutputTokens = Math.ceil(estimatedInputTokens * outputRatio);
+    return this.calculateCost(estimatedInputTokens, estimatedOutputTokens);
+  }
+
+  /**
+   * Check if budget tracking is enabled and not free tier.
+   * Useful for agents to skip budget operations entirely.
+   */
+  isTrackingEnabled(): boolean {
+    const config = this.getConfig();
+    return config.enabled && config.billingType !== 'free';
   }
 }

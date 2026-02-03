@@ -27,7 +27,6 @@ import {
   type FallbackAgent
 } from './agents/index.js';
 import { BudgetController } from './budget/BudgetController.js';
-import { getPresetById, calculateTokenCost } from './budget/pricing-presets.js';
 
 // OpenRouter API endpoint
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -356,15 +355,11 @@ export class OpenRouterAgent {
       estimatedTokens
     });
 
-    // Estimate cost for budget check
-    const openrouterPreset = getPresetById('openrouter-paid');
-    const estimatedCost = openrouterPreset
-      ? calculateTokenCost(openrouterPreset, estimatedTokens, 1000)
-      : 0;
-
-    // Reserve budget before API call
+    // Reserve budget before API call (using BudgetController's configured preset)
     let txId: string | null = null;
-    if (this.budgetController) {
+    if (this.budgetController && this.budgetController.isTrackingEnabled()) {
+      const estimatedCost = this.budgetController.estimateCost(estimatedTokens);
+
       const reserveResult = this.budgetController.reserve(estimatedCost, 'openrouter', sessionDbId);
       if (!reserveResult.success) {
         logger.warn('BUDGET', 'OpenRouter request blocked by budget limit', {
@@ -420,11 +415,9 @@ export class OpenRouterAgent {
       const inputTokens = data.usage?.prompt_tokens || 0;
       const outputTokens = data.usage?.completion_tokens || 0;
 
-      // Commit actual cost
+      // Commit actual cost using BudgetController's configured preset
       if (txId && this.budgetController) {
-        const actualCost = openrouterPreset
-          ? calculateTokenCost(openrouterPreset, inputTokens, outputTokens)
-          : 0;
+        const actualCost = this.budgetController.calculateCost(inputTokens, outputTokens);
         this.budgetController.commit(txId, 0, actualCost, {
           inputTokens,
           outputTokens
