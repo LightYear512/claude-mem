@@ -127,11 +127,24 @@ Claude-mem automatically handles rate limiting for free tier usage:
 
 ```json
 {
-  "CLAUDE_MEM_GEMINI_BILLING_ENABLED": true
+  "CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED": "false"
 }
 ```
 
 You'll still use the free quota but with much higher rate limits.
+
+### Custom API Endpoint
+
+For Gemini-compatible services, you can configure a custom API URL:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "gemini",
+  "CLAUDE_MEM_GEMINI_API_KEY": "your-key",
+  "CLAUDE_MEM_GEMINI_API_URL": "https://your-custom-endpoint.com/v1/models",
+  "CLAUDE_MEM_GEMINI_MODEL": "your-model-name"
+}
+```
 
 ## Troubleshooting
 

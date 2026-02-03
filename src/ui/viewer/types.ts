@@ -89,6 +89,9 @@ export interface Settings {
   // Feature Toggles
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY?: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE?: string;
+
+  // Mode Configuration
+  CLAUDE_MEM_MODE?: string;  // Mode profile for observation language (e.g., 'code', 'code--zh', 'code--ja')
 }
 
 export interface WorkerStats {
