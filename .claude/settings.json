@@ -6,5 +6,6 @@
       "Read(./node_modules/**)",
       "Read(./.DS_Store)"
     ]
-  }
+  },
+  "enabledPlugins": {}
 }
