@@ -135,6 +135,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_BUDGET_DAILY_LIMIT',
       'CLAUDE_MEM_BUDGET_MONTHLY_LIMIT',
       'CLAUDE_MEM_BUDGET_CUSTOM_PRICING',
+      'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
     ];
 
     for (const key of settingKeys) {

@@ -39,9 +39,8 @@ Claude-mem supports Google's Gemini API as an alternative to the Claude Agent SD
 |---------|--------|---------|-------------|
 | `CLAUDE_MEM_PROVIDER` | `claude`, `gemini` | `claude` | AI provider for observation extraction |
 | `CLAUDE_MEM_GEMINI_API_KEY` | string | — | Your Gemini API key |
-| `CLAUDE_MEM_GEMINI_API_URL` | string | `https://generativelanguage.googleapis.com/v1beta/models` | Custom API URL for Gemini-compatible endpoints |
-| `CLAUDE_MEM_GEMINI_MODEL` | `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `gemini-3-flash` | `gemini-2.5-flash-lite` | Gemini model to use |
-| `CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED` | `true`, `false` | `true` | Enable rate limiting for free tier (disable if billing enabled) |
+| `CLAUDE_MEM_GEMINI_MODEL` | `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `gemini-3-flash-preview` | `gemini-2.5-flash-lite` | Gemini model to use |
+| `CLAUDE_MEM_GEMINI_BILLING_ENABLED` | `true`, `false` | `false` | Skip rate limiting if billing is enabled on Google Cloud |
 
 ### Using the Settings UI
 
@@ -62,35 +61,17 @@ Edit `~/.claude-mem/settings.json`:
   "CLAUDE_MEM_PROVIDER": "gemini",
   "CLAUDE_MEM_GEMINI_API_KEY": "your-api-key-here",
   "CLAUDE_MEM_GEMINI_MODEL": "gemini-2.5-flash-lite",
-  "CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED": "false"
+  "CLAUDE_MEM_GEMINI_BILLING_ENABLED": "true"
 }
 ```
 
-Alternatively, set via environment variables:
+Alternatively, set the API key via environment variable:
 
 ```bash
 export GEMINI_API_KEY="your-api-key-here"
-export GEMINI_API_URL="https://your-custom-endpoint.com/v1/models"  # optional
 ```
 
-The settings file takes precedence over environment variables.
-
-### Custom API Endpoint
-
-For Gemini-compatible services (e.g., self-hosted proxies or alternative endpoints), you can configure a custom API URL:
-
-```json
-{
-  "CLAUDE_MEM_PROVIDER": "gemini",
-  "CLAUDE_MEM_GEMINI_API_KEY": "your-api-key-here",
-  "CLAUDE_MEM_GEMINI_API_URL": "https://your-custom-endpoint.com/v1/models",
-  "CLAUDE_MEM_GEMINI_MODEL": "your-model-name"
-}
-```
-
-<Note>
-When using a custom API URL, model name validation is skipped to allow non-standard model names supported by your endpoint.
-</Note>
+The settings file takes precedence over the environment variable.
 
 ## Available Models
 
@@ -98,7 +79,7 @@ When using a custom API URL, model name validation is skipped to allow non-stand
 |-------|--------------|-------|
 | `gemini-2.5-flash-lite` | 10 | Default, recommended for free tier (highest RPM) |
 | `gemini-2.5-flash` | 5 | Higher capability, lower rate limit |
-| `gemini-3-flash` | 5 | Latest model, lower rate limit |
+| `gemini-3-flash-preview` | 5 | Latest model, lower rate limit |
 
 ## Provider Switching
 
@@ -158,7 +139,7 @@ Google has two rate limit tiers for free usage:
 |-------|-----|-----|
 | gemini-2.5-flash-lite | 10 | 250K |
 | gemini-2.5-flash | 5 | 250K |
-| gemini-3-flash | 5 | 250K |
+| gemini-3-flash-preview | 5 | 250K |
 
 Claude-mem enforces these limits automatically with built-in delays between requests. Processing may be slower but stays within limits.
 
@@ -168,7 +149,7 @@ Claude-mem enforces these limits automatically with built-in delays between requ
 |-------|-----|-----|
 | gemini-2.5-flash-lite | 4,000 | 4M |
 | gemini-2.5-flash | 1,000 | 1M |
-| gemini-3-flash | 1,000 | 1M |
+| gemini-3-flash-preview | 1,000 | 1M |
 
 <Tip>
 **Recommended**: Enable billing on your Google Cloud project to unlock much higher rate limits. You won't be charged unless you exceed the generous free quota. This allows claude-mem to process observations instantly instead of waiting between requests.
