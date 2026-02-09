@@ -312,13 +312,29 @@ export class BudgetController {
         return;
       }
 
-      // Refund pre-deducted cost
-      this.db.prepare(`
-        UPDATE budget_state
-        SET spent_today_micros = spent_today_micros - ?,
-            spent_month_micros = spent_month_micros - ?
-        WHERE id = 1
-      `).run(tx.cost_micros, tx.cost_micros);
+      // Determine if budget adjustment is needed based on date alignment.
+      // After a date reset, spent_today_micros is zeroed so the reserved amount
+      // from a previous day is no longer reflected — subtracting would go negative.
+      // Same logic applies to month resets for spent_month_micros.
+      const state = this.db.prepare(`
+        SELECT budget_date, budget_month FROM budget_state WHERE id = 1
+      `).get() as { budget_date: string; budget_month: string };
+
+      const txDate = new Date(tx.created_at_epoch);
+      const txDateStr = `${txDate.getFullYear()}-${String(txDate.getMonth() + 1).padStart(2, '0')}-${String(txDate.getDate()).padStart(2, '0')}`;
+      const txMonthStr = txDateStr.substring(0, 7);
+
+      const todayAdjust = txDateStr === state.budget_date ? tx.cost_micros : 0;
+      const monthAdjust = txMonthStr === state.budget_month ? tx.cost_micros : 0;
+
+      if (todayAdjust > 0 || monthAdjust > 0) {
+        this.db.prepare(`
+          UPDATE budget_state
+          SET spent_today_micros = spent_today_micros - ?,
+              spent_month_micros = spent_month_micros - ?
+          WHERE id = 1
+        `).run(todayAdjust, monthAdjust);
+      }
 
       // Update transaction state
       this.db.prepare(`
@@ -331,6 +347,8 @@ export class BudgetController {
         txId,
         reason,
         costUsd: tx.cost_micros / 1_000_000,
+        adjustedToday: todayAdjust > 0,
+        adjustedMonth: monthAdjust > 0,
       });
     })();
   }

@@ -1457,16 +1457,18 @@ Tips:
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(this.timeProvider.today(),this.timeProvider.month(),i.provider,r,i.session_db_id??null,s?.inputTokens??0,s?.outputTokens??0,s?.cacheCreationTokens??0,s?.cacheReadTokens??0,o,s?.priceInputPerM??null,s?.priceOutputPerM??null,Date.now()),x.debug("BUDGET","Cost committed",{txId:e,observationId:r,costUsd:o/1e6})})()}rollback(e,r){this.db.transaction(()=>{let n=this.db.prepare(`
         SELECT * FROM budget_transactions WHERE id = ? AND phase = 'reserved'
-      `).get(e);if(!n){x.warn("BUDGET",`Rollback: transaction ${e} not found or not reserved`);return}this.db.prepare(`
-        UPDATE budget_state
-        SET spent_today_micros = spent_today_micros - ?,
-            spent_month_micros = spent_month_micros - ?
-        WHERE id = 1
-      `).run(n.cost_micros,n.cost_micros),this.db.prepare(`
+      `).get(e);if(!n){x.warn("BUDGET",`Rollback: transaction ${e} not found or not reserved`);return}let s=this.db.prepare(`
+        SELECT budget_date, budget_month FROM budget_state WHERE id = 1
+      `).get(),i=new Date(n.created_at_epoch),o=`${i.getFullYear()}-${String(i.getMonth()+1).padStart(2,"0")}-${String(i.getDate()).padStart(2,"0")}`,a=o.substring(0,7),c=o===s.budget_date?n.cost_micros:0,u=a===s.budget_month?n.cost_micros:0;(c>0||u>0)&&this.db.prepare(`
+          UPDATE budget_state
+          SET spent_today_micros = spent_today_micros - ?,
+              spent_month_micros = spent_month_micros - ?
+          WHERE id = 1
+        `).run(c,u),this.db.prepare(`
         UPDATE budget_transactions
         SET phase = 'rolled_back', rolled_back_at_epoch = ?, error_reason = ?
         WHERE id = ?
-      `).run(Date.now(),r,e),x.info("BUDGET","Cost rolled back",{txId:e,reason:r,costUsd:n.cost_micros/1e6})})()}ensureDateReset(){let e=this.timeProvider.today(),r=this.timeProvider.month(),n=this.db.prepare(`
+      `).run(Date.now(),r,e),x.info("BUDGET","Cost rolled back",{txId:e,reason:r,costUsd:n.cost_micros/1e6,adjustedToday:c>0,adjustedMonth:u>0})})()}ensureDateReset(){let e=this.timeProvider.today(),r=this.timeProvider.month(),n=this.db.prepare(`
       SELECT budget_date, budget_month FROM budget_state WHERE id = 1
     `).get();if(n&&n.budget_date!==e){x.info("BUDGET","Daily budget reset",{oldDate:n.budget_date,newDate:e});let s=n.budget_month!==r;this.db.prepare(`
         UPDATE budget_state
