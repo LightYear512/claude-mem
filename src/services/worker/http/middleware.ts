@@ -79,19 +79,31 @@ export function createMiddleware(
 /**
  * Middleware to require localhost-only access
  * Used for admin endpoints that should not be exposed when binding to 0.0.0.0
+ *
+ * Checks both the TCP connection IP and the Origin header.
+ * The Origin check handles WSL2 where the Windows browser connects via a virtual
+ * network interface (e.g. 172.x.x.x) but the Origin header is still localhost.
  */
 export function requireLocalhost(req: Request, res: Response, next: NextFunction): void {
   const clientIp = req.ip || req.connection.remoteAddress || '';
-  const isLocalhost =
+  const isLocalhostIp =
     clientIp === '127.0.0.1' ||
     clientIp === '::1' ||
     clientIp === '::ffff:127.0.0.1' ||
     clientIp === 'localhost';
 
-  if (!isLocalhost) {
+  // In WSL2, browser requests arrive from the Windows host's virtual network IP,
+  // not 127.0.0.1. The Origin header still reflects the localhost URL the user accessed.
+  const origin = req.headers.origin || '';
+  const isLocalhostOrigin =
+    origin.startsWith('http://localhost:') ||
+    origin.startsWith('http://127.0.0.1:');
+
+  if (!isLocalhostIp && !isLocalhostOrigin) {
     logger.warn('SECURITY', 'Admin endpoint access denied - not localhost', {
       endpoint: req.path,
       clientIp,
+      origin,
       method: req.method
     });
     res.status(403).json({
