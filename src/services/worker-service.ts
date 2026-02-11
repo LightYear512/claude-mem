@@ -149,6 +149,7 @@ export class WorkerService {
 
   // Initialization flags
   private mcpReady: boolean = false;
+  private dbReadyFlag: boolean = false;
   private initializationCompleteFlag: boolean = false;
   private isShuttingDown: boolean = false;
 
@@ -170,17 +171,19 @@ export class WorkerService {
   // Budget controller
   private budgetController: BudgetController | null = null;
 
-  // Initialization tracking
-  private initializationComplete: Promise<void>;
-  private resolveInitialization!: () => void;
+  // Initialization tracking — two-stage:
+  // 1. dbReady: resolves when database + search services are initialized (routes unblocked)
+  // 2. initializationCompleteFlag: set when MCP connection completes (full readiness)
+  private dbReady: Promise<void>;
+  private resolveDbReady!: () => void;
 
   // Orphan reaper cleanup function (Issue #737)
   private stopOrphanReaper: (() => void) | null = null;
 
   constructor() {
-    // Initialize the promise that will resolve when background initialization completes
-    this.initializationComplete = new Promise((resolve) => {
-      this.resolveInitialization = resolve;
+    // DB-ready promise: resolves when database is initialized (unblocks guard middleware)
+    this.dbReady = new Promise((resolve) => {
+      this.resolveDbReady = resolve;
     });
 
     // Initialize service layer
@@ -247,10 +250,12 @@ export class WorkerService {
   private registerRoutes(): void {
     // IMPORTANT: Middleware must be registered BEFORE routes (Express processes in order)
 
-    // Early handler for /api/context/inject — fail open if not yet initialized
+    // Early handler for /api/context/inject — fail open if search not yet available.
+    // Only checks searchRoutes (not initializationCompleteFlag) because context injection
+    // only needs DB + search — it does NOT need MCP connection.
     this.server.app.get('/api/context/inject', async (req, res, next) => {
-      if (!this.initializationCompleteFlag || !this.searchRoutes) {
-        logger.warn('SYSTEM', 'Context requested before initialization complete, returning empty');
+      if (!this.searchRoutes) {
+        logger.warn('SYSTEM', 'Context requested before search routes initialized, returning empty');
         res.status(200).json({ content: [{ type: 'text', text: '' }] });
         return;
       }
@@ -258,11 +263,19 @@ export class WorkerService {
       next(); // Delegate to SearchRoutes handler
     });
 
-    // Guard ALL /api/* routes during initialization — wait for DB with timeout
-    // Exceptions: /api/health, /api/readiness, /api/version (handled by Server.ts core routes)
-    // and /api/context/inject (handled above with fail-open)
-    this.server.app.use('/api', async (req, res, next) => {
-      if (this.initializationCompleteFlag) {
+    // DB-ready guard middleware — waits for database initialization with timeout.
+    // Uses dbReadyFlag (not initializationCompleteFlag) so routes unblock as soon as
+    // the database is initialized, without waiting for MCP connection (up to 5 minutes).
+    //
+    // Applied to:
+    //   /api/*      — guarded (except /api/health, /api/readiness, /api/version registered
+    //                 in Server.ts BEFORE this middleware, and /api/context/inject above)
+    //   /sessions/* — legacy hook endpoints that access the database
+    //
+    // NOT applied to (handled separately):
+    //   /health, /, /stream — ViewerRoutes; /stream has its own fail-open via getDbReady()
+    const dbGuard = async (req: { method: string; path: string }, res: { status: (code: number) => { json: (body: unknown) => void } }, next: () => void) => {
+      if (this.dbReadyFlag) {
         next();
         return;
       }
@@ -273,7 +286,7 @@ export class WorkerService {
       );
 
       try {
-        await Promise.race([this.initializationComplete, timeoutPromise]);
+        await Promise.race([this.dbReady, timeoutPromise]);
         next();
       } catch (error) {
         logger.error('HTTP', `Request to ${req.method} ${req.path} rejected — DB not initialized`, {}, error as Error);
@@ -282,10 +295,12 @@ export class WorkerService {
           message: 'Database is still initializing, please retry'
         });
       }
-    });
+    };
+    this.server.app.use('/api', dbGuard);
+    this.server.app.use('/sessions', dbGuard);
 
     // Standard routes (registered AFTER guard middleware)
-    this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
+    this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager, () => this.dbReadyFlag));
     this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.dashScopeAgent, this.sessionEventBroadcaster, this));
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
     // Settings routes with callbacks for settings changes and vector DB reset
@@ -361,6 +376,11 @@ export class WorkerService {
 
       await this.dbManager.initialize();
 
+      // Mark DB as ready — unblocks guard middleware and /stream route
+      this.dbReadyFlag = true;
+      this.resolveDbReady();
+      logger.info('SYSTEM', 'Database initialized (DB-ready stage complete)');
+
       // Reset any messages that were processing when worker died
       const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
       const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
@@ -414,7 +434,6 @@ export class WorkerService {
       logger.success('WORKER', 'Connected to MCP server');
 
       this.initializationCompleteFlag = true;
-      this.resolveInitialization();
       logger.info('SYSTEM', 'Background initialization complete');
 
       // Backfill vector database (fire-and-forget, non-blocking)

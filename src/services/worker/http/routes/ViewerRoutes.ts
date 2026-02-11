@@ -19,7 +19,8 @@ export class ViewerRoutes extends BaseRouteHandler {
   constructor(
     private sseBroadcaster: SSEBroadcaster,
     private dbManager: DatabaseManager,
-    private sessionManager: SessionManager
+    private sessionManager: SessionManager,
+    private getDbReady: () => boolean = () => true
   ) {
     super();
   }
@@ -75,6 +76,22 @@ export class ViewerRoutes extends BaseRouteHandler {
 
     // Add client to broadcaster
     this.sseBroadcaster.addClient(res);
+
+    // Fail-open: if DB not yet initialized, send empty initial data instead of crashing
+    if (!this.getDbReady()) {
+      logger.warn('SYSTEM', 'SSE /stream requested before DB ready, sending empty initial data');
+      this.sseBroadcaster.broadcast({
+        type: 'initial_load',
+        projects: [],
+        timestamp: Date.now()
+      });
+      this.sseBroadcaster.broadcast({
+        type: 'processing_status',
+        isProcessing: false,
+        queueDepth: 0
+      });
+      return;
+    }
 
     // Send initial_load event with projects list
     const allProjects = this.dbManager.getSessionStore().getAllProjects();
