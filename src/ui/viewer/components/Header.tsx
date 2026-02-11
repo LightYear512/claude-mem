@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState } from 'react';
 import { ThemeToggle } from './ThemeToggle';
 import { ThemePreference } from '../hooks/useTheme';
 import { GitHubStarsButton } from './GitHubStarsButton';
@@ -29,29 +29,14 @@ export function Header({
   onContextPreviewToggle
 }: HeaderProps) {
   useSpinningFavicon(isProcessing);
-  const [showPowerMenu, setShowPowerMenu] = useState(false);
-  const [confirmAction, setConfirmAction] = useState<'shutdown' | 'restart' | null>(null);
+  const [showShutdownConfirm, setShowShutdownConfirm] = useState(false);
   const [powerStatus, setPowerStatus] = useState<string | null>(null);
-  const powerMenuRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!showPowerMenu) return;
-    function handleClickOutside(e: MouseEvent) {
-      if (powerMenuRef.current && !powerMenuRef.current.contains(e.target as Node)) {
-        setShowPowerMenu(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showPowerMenu]);
-
-  async function handlePowerAction(action: 'shutdown' | 'restart') {
-    const endpoint = action === 'shutdown' ? API_ENDPOINTS.ADMIN_SHUTDOWN : API_ENDPOINTS.ADMIN_RESTART;
-    setConfirmAction(null);
-    setShowPowerMenu(false);
+  async function handleShutdown() {
+    setShowShutdownConfirm(false);
     try {
-      await fetch(endpoint, { method: 'POST' });
-      setPowerStatus(action === 'shutdown' ? 'Worker is shutting down...' : 'Worker is restarting...');
+      await fetch(API_ENDPOINTS.ADMIN_SHUTDOWN, { method: 'POST' });
+      setPowerStatus('Worker is shutting down...');
       setTimeout(() => setPowerStatus(null), 3000);
     } catch {
       setPowerStatus('Failed to connect to worker');
@@ -132,56 +117,32 @@ export function Header({
             <circle cx="12" cy="12" r="3"></circle>
           </svg>
         </button>
-        <div className="power-btn-wrapper" ref={powerMenuRef}>
-          <button
-            className="settings-btn power-btn"
-            onClick={() => setShowPowerMenu(prev => !prev)}
-            title="Worker Power"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
-              <line x1="12" y1="2" x2="12" y2="12"></line>
-            </svg>
-          </button>
-          {showPowerMenu && (
-            <div className="power-menu">
-              <button className="power-menu-item power-menu-restart" onClick={() => { setShowPowerMenu(false); setConfirmAction('restart'); }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="23 4 23 10 17 10"></polyline>
-                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
-                </svg>
-                Restart Worker
-              </button>
-              <button className="power-menu-item power-menu-shutdown" onClick={() => { setShowPowerMenu(false); setConfirmAction('shutdown'); }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
-                  <line x1="12" y1="2" x2="12" y2="12"></line>
-                </svg>
-                Shutdown Worker
-              </button>
-            </div>
-          )}
-        </div>
+        <button
+          className="settings-btn power-btn"
+          onClick={() => setShowShutdownConfirm(true)}
+          title="Shutdown Worker"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+            <line x1="12" y1="2" x2="12" y2="12"></line>
+          </svg>
+        </button>
       </div>
     </div>
-    {confirmAction && (
-      <div className="power-confirm-backdrop" onClick={() => setConfirmAction(null)}>
+    {showShutdownConfirm && (
+      <div className="power-confirm-backdrop" onClick={() => setShowShutdownConfirm(false)}>
         <div className="power-confirm-dialog" onClick={e => e.stopPropagation()}>
-          <div className="power-confirm-title">
-            {confirmAction === 'shutdown' ? 'Shutdown Worker?' : 'Restart Worker?'}
-          </div>
+          <div className="power-confirm-title">Shutdown Worker?</div>
           <div className="power-confirm-msg">
-            {confirmAction === 'shutdown'
-              ? 'This will stop the worker service. Memory capture will be paused until the worker is started again.'
-              : 'This will restart the worker service. Memory capture will be briefly interrupted.'}
+            This will stop the worker service. Memory capture will be paused until the next Claude Code session starts.
           </div>
           <div className="power-confirm-actions">
-            <button className="power-confirm-cancel" onClick={() => setConfirmAction(null)}>Cancel</button>
+            <button className="power-confirm-cancel" onClick={() => setShowShutdownConfirm(false)}>Cancel</button>
             <button
-              className={`power-confirm-ok ${confirmAction === 'shutdown' ? 'power-confirm-danger' : 'power-confirm-primary'}`}
-              onClick={() => handlePowerAction(confirmAction)}
+              className="power-confirm-ok power-confirm-danger"
+              onClick={handleShutdown}
             >
-              {confirmAction === 'shutdown' ? 'Shutdown' : 'Restart'}
+              Shutdown
             </button>
           </div>
         </div>
