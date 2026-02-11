@@ -843,7 +843,7 @@ export function ContextSettingsModal({
                         borderRadius: '50%',
                         animation: 'spin 1s linear infinite',
                       }} />
-                      Testing...
+                      <span>Testing...</span>
                     </>
                   ) : (
                     <>
@@ -851,7 +851,7 @@ export function ContextSettingsModal({
                         <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
                         <polyline points="22 4 12 14.01 9 11.01" />
                       </svg>
-                      Test Connection
+                      <span>Test Connection</span>
                     </>
                   )}
                 </button>
@@ -1077,7 +1077,7 @@ export function ContextSettingsModal({
                         animation: 'spin 1s linear infinite',
                         display: 'inline-block',
                       }} />
-                      {getEmbeddingPhaseText(embeddingTest.elapsedSeconds, currentModelInfo?.cached ?? false)} ({embeddingTest.elapsedSeconds}s)
+                      <span>{getEmbeddingPhaseText(embeddingTest.elapsedSeconds, currentModelInfo?.cached ?? false)} ({embeddingTest.elapsedSeconds}s)</span>
                     </>
                   ) : (
                     <>
@@ -1085,7 +1085,7 @@ export function ContextSettingsModal({
                         <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
                         <polyline points="22 4 12 14.01 9 11.01" />
                       </svg>
-                      Test Embedding Model
+                      <span>Test Embedding Model</span>
                     </>
                   )}
                 </button>
@@ -1138,7 +1138,7 @@ export function ContextSettingsModal({
                         animation: 'spin 1s linear infinite',
                         display: 'inline-block',
                       }} />
-                      Resetting...
+                      <span>Resetting...</span>
                     </>
                   ) : (
                     <>
@@ -1146,7 +1146,7 @@ export function ContextSettingsModal({
                         <polyline points="23 4 23 10 17 10" />
                         <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
                       </svg>
-                      Reset Vector DB & Restart
+                      <span>Reset Vector DB & Restart</span>
                     </>
                   )}
                 </button>
