@@ -154,7 +154,16 @@ export class DashScopeAgent {
       let lastCwd: string | undefined;
 
       // Process pending messages
+      let messageIndex = 0;
       for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+        messageIndex++;
+        logger.debug('SDK', `DashScope processing message #${messageIndex}`, {
+          sessionDbId: session.sessionDbId,
+          type: message.type,
+          toolName: message.tool_name || undefined,
+          promptNumber: message.prompt_number
+        });
+
         // CLAIM-CONFIRM: Track message ID for confirmProcessed() after successful storage
         session.processingMessageIds.push(message._persistentId);
 
@@ -173,6 +182,12 @@ export class DashScopeAgent {
 
           // CRITICAL: Check memorySessionId BEFORE making expensive LLM call
           if (!session.memorySessionId) {
+            logger.error('SDK', 'Cannot process observation: memorySessionId missing', {
+              sessionDbId: session.sessionDbId,
+              contentSessionId: session.contentSessionId,
+              messageType: 'observation',
+              toolName: message.tool_name
+            });
             throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
           }
 
@@ -215,6 +230,11 @@ export class DashScopeAgent {
         } else if (message.type === 'summarize') {
           // CRITICAL: Check memorySessionId BEFORE making expensive LLM call
           if (!session.memorySessionId) {
+            logger.error('SDK', 'Cannot process summary: memorySessionId missing', {
+              sessionDbId: session.sessionDbId,
+              contentSessionId: session.contentSessionId,
+              messageType: 'summarize'
+            });
             throw new Error('Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.');
           }
 
@@ -384,6 +404,12 @@ export class DashScopeAgent {
         throw new Error(`Budget limit exceeded (${reserveResult.reason}): used $${reserveResult.used?.toFixed(2)}, limit $${reserveResult.limit?.toFixed(2)}`);
       }
       txId = reserveResult.txId;
+      logger.debug('BUDGET', 'DashScope budget reserved', {
+        sessionDbId,
+        txId,
+        estimatedCost: estimatedCost.toFixed(6),
+        estimatedTokens
+      });
     }
 
     try {
@@ -478,6 +504,13 @@ export class DashScopeAgent {
 
     const apiKey = settings.CLAUDE_MEM_DASHSCOPE_API_KEY || getCredential('DASHSCOPE_API_KEY') || '';
     const model = settings.CLAUDE_MEM_DASHSCOPE_MODEL || 'qwen-plus';
+    const keySource = settings.CLAUDE_MEM_DASHSCOPE_API_KEY ? 'settings' : (getCredential('DASHSCOPE_API_KEY') ? 'env' : 'none');
+
+    logger.debug('SDK', 'DashScope config loaded', {
+      model,
+      keySource,
+      hasApiKey: !!apiKey
+    });
 
     return { apiKey, model };
   }
@@ -507,6 +540,7 @@ export async function testDashScopeConnection(
   apiKey: string,
   model: string
 ): Promise<{ success: boolean; message: string; model?: string; latencyMs?: number }> {
+  logger.info('SDK', 'Testing DashScope connection', { model });
   const startTime = Date.now();
 
   try {
@@ -541,6 +575,7 @@ export async function testDashScopeConnection(
         }
       }
 
+      logger.error('SDK', 'DashScope connection test failed', { model, latencyMs, status: response.status, error: errorMessage });
       return {
         success: false,
         message: errorMessage,
@@ -552,6 +587,7 @@ export async function testDashScopeConnection(
     const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
 
     if (!data.choices?.[0]?.message?.content) {
+      logger.error('SDK', 'DashScope connection test: invalid response format', { model, latencyMs });
       return {
         success: false,
         message: 'Invalid response format from API',
@@ -560,6 +596,7 @@ export async function testDashScopeConnection(
       };
     }
 
+    logger.info('SDK', 'DashScope connection test succeeded', { model, latencyMs });
     return {
       success: true,
       message: `Connected successfully (${latencyMs}ms)`,
@@ -569,6 +606,7 @@ export async function testDashScopeConnection(
   } catch (error) {
     const latencyMs = Date.now() - startTime;
     const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.error('SDK', 'DashScope connection test error', { model, latencyMs, error: errorMessage });
 
     if (errorMessage.includes('ECONNREFUSED') || errorMessage.includes('ENOTFOUND')) {
       return {
