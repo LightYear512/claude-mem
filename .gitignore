@@ -34,3 +34,6 @@ https*/
 
 # Ignore WebStorm project files (for dinosaur IDE users)
 .idea/
+
+# Python cache
+__pycache__/
