@@ -78,7 +78,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_MODEL: 'claude-sonnet-4-5',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_WORKER_PORT: '37777',
-    CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
+    CLAUDE_MEM_WORKER_HOST: '0.0.0.0',
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
     // AI Provider Configuration
     CLAUDE_MEM_PROVIDER: 'claude',  // Default to Claude
@@ -119,7 +119,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
     // Vector Search Configuration
-    CLAUDE_MEM_EMBEDDING_FUNCTION: 'default',  // default: all-MiniLM-L6-v2, or specify sentence-transformers model
+    CLAUDE_MEM_EMBEDDING_FUNCTION: 'dashscope:text-embedding-v3:768',  // DashScope text-embedding-v3 768d, or 'default' for local all-MiniLM-L6-v2
     // Budget Tracking Configuration
     CLAUDE_MEM_BUDGET_ENABLED: 'false',  // Disabled by default
     CLAUDE_MEM_BUDGET_PRESET: 'claude-haiku',  // Default to Claude Haiku pricing
