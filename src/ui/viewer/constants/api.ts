@@ -15,4 +15,6 @@ export const API_ENDPOINTS = {
   STATS: '/api/stats',
   PROCESSING_STATUS: '/api/processing-status',
   STREAM: '/stream',
+  ADMIN_SHUTDOWN: '/api/admin/shutdown',
+  ADMIN_RESTART: '/api/admin/restart',
 } as const;
