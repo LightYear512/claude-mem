@@ -950,7 +950,7 @@ export function ContextSettingsModal({
                       <optgroup key={group} label={group}>
                         {embeddingModels.filter(m => m.group === group).map(m => (
                           <option key={m.id} value={m.id}>
-                            {m.name} ({m.dimensions}d){m.cached ? ' \u2713' : ` \u00b7 ${m.size}`}
+                            {m.id.startsWith('dashscope:') ? m.name : `${m.name} (${m.dimensions}d)${m.cached ? ' \u2713' : ` \u00b7 ${m.size}`}`}
                           </option>
                         ))}
                       </optgroup>
@@ -1032,11 +1032,17 @@ export function ContextSettingsModal({
                     </>
                   ) : (
                     <>
-                      <div>Test the embedding model before saving.</div>
-                      <div style={{ marginTop: '4px', opacity: 0.85 }}>
-                        Model size: {currentModelInfo?.size || 'unknown'}.
-                        First use will download the model (may take a few minutes).
-                      </div>
+                      <div>⚠ Test the embedding model before saving.</div>
+                      {currentBaseModel.startsWith('dashscope:') ? (
+                        <div style={{ marginTop: '4px', opacity: 0.85 }}>
+                          Click "Test Embedding" to verify API key and connectivity.
+                        </div>
+                      ) : (
+                        <div style={{ marginTop: '4px', opacity: 0.85 }}>
+                          Model size: {currentModelInfo?.size || 'unknown'}.
+                          First use will download the model (may take a few minutes).
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
@@ -1369,6 +1375,9 @@ export function ContextSettingsModal({
             <>
               <div className="save-status">
                 {saveStatus && <span className={saveStatus.includes('✓') ? 'success' : saveStatus.includes('✗') ? 'error' : ''}>{saveStatus}</span>}
+                {embeddingChanged && !embeddingVerified && !saveStatus && (
+                  <span style={{ color: '#ffb74d', fontSize: '12px' }}>Test embedding model first</span>
+                )}
               </div>
               <button
                 className="save-btn"
