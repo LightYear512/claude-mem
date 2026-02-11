@@ -18,6 +18,8 @@ export const DEFAULT_SETTINGS = {
   CLAUDE_MEM_OPENROUTER_SITE_URL: '',
   CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',
+  CLAUDE_MEM_DASHSCOPE_API_KEY: '',
+  CLAUDE_MEM_DASHSCOPE_MODEL: 'qwen-plus',
 
   // Token Economics (all true for backwards compatibility)
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',
@@ -40,6 +42,9 @@ export const DEFAULT_SETTINGS = {
 
   // Mode Configuration
   CLAUDE_MEM_MODE: 'code',
+
+  // Vector Search Configuration
+  CLAUDE_MEM_EMBEDDING_FUNCTION: 'default',
 
   // Budget Tracking Configuration
   CLAUDE_MEM_BUDGET_ENABLED: 'false',

@@ -52,6 +52,7 @@ export const MANAGED_CREDENTIAL_KEYS = [
   'ANTHROPIC_API_KEY',
   'GEMINI_API_KEY',
   'OPENROUTER_API_KEY',
+  'DASHSCOPE_API_KEY',
 ];
 
 export interface ClaudeMemEnv {
@@ -59,6 +60,7 @@ export interface ClaudeMemEnv {
   ANTHROPIC_API_KEY?: string;
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
+  DASHSCOPE_API_KEY?: string;
 }
 
 /**
@@ -134,6 +136,7 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
     if (parsed.ANTHROPIC_API_KEY) result.ANTHROPIC_API_KEY = parsed.ANTHROPIC_API_KEY;
     if (parsed.GEMINI_API_KEY) result.GEMINI_API_KEY = parsed.GEMINI_API_KEY;
     if (parsed.OPENROUTER_API_KEY) result.OPENROUTER_API_KEY = parsed.OPENROUTER_API_KEY;
+    if (parsed.DASHSCOPE_API_KEY) result.DASHSCOPE_API_KEY = parsed.DASHSCOPE_API_KEY;
 
     return result;
   } catch (error) {
@@ -180,6 +183,13 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
         updated.OPENROUTER_API_KEY = env.OPENROUTER_API_KEY;
       } else {
         delete updated.OPENROUTER_API_KEY;
+      }
+    }
+    if (env.DASHSCOPE_API_KEY !== undefined) {
+      if (env.DASHSCOPE_API_KEY) {
+        updated.DASHSCOPE_API_KEY = env.DASHSCOPE_API_KEY;
+      } else {
+        delete updated.DASHSCOPE_API_KEY;
       }
     }
 
@@ -229,6 +239,9 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     }
     if (credentials.OPENROUTER_API_KEY) {
       isolatedEnv.OPENROUTER_API_KEY = credentials.OPENROUTER_API_KEY;
+    }
+    if (credentials.DASHSCOPE_API_KEY) {
+      isolatedEnv.DASHSCOPE_API_KEY = credentials.DASHSCOPE_API_KEY;
     }
   }
 

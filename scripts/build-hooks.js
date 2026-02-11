@@ -151,11 +151,21 @@ async function buildHooks() {
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
 
+    // Copy custom Chroma MCP server (Python)
+    console.log(`\n📋 Copying custom Chroma MCP server...`);
+    const chromaMcpSource = 'src/services/sync/chroma-mcp-server.py';
+    const chromaMcpDest = `${hooksDir}/chroma-mcp-server.py`;
+    fs.copyFileSync(chromaMcpSource, chromaMcpDest);
+    fs.chmodSync(chromaMcpDest, 0o755);
+    const chromaMcpStats = fs.statSync(chromaMcpDest);
+    console.log(`✓ chroma-mcp-server.py copied (${(chromaMcpStats.size / 1024).toFixed(2)} KB)`);
+
     console.log('\n✅ Worker service, MCP server, and context generator built successfully!');
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Worker: worker-service.cjs`);
     console.log(`   - MCP Server: mcp-server.cjs`);
     console.log(`   - Context Generator: context-generator.cjs`);
+    console.log(`   - Chroma MCP: chroma-mcp-server.py`);
 
   } catch (error) {
     console.error('\n❌ Build failed:', error.message);

@@ -130,6 +130,31 @@ export const PRICING_PRESETS: PricingPreset[] = [
   },
 
   // =========================================================================
+  // DashScope (Alibaba Cloud)
+  // =========================================================================
+  {
+    id: 'dashscope-qwen-turbo',
+    name: 'DashScope Qwen Turbo',
+    billingType: 'token',
+    input: 0.30,
+    output: 0.60,
+  },
+  {
+    id: 'dashscope-qwen-plus',
+    name: 'DashScope Qwen Plus',
+    billingType: 'token',
+    input: 0.80,
+    output: 2.00,
+  },
+  {
+    id: 'dashscope-qwen-max',
+    name: 'DashScope Qwen Max',
+    billingType: 'token',
+    input: 2.40,
+    output: 9.60,
+  },
+
+  // =========================================================================
   // Custom
   // =========================================================================
   {

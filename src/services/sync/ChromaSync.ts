@@ -15,6 +15,7 @@ import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { getCredential } from '../../shared/EnvManager.js';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
@@ -220,14 +221,30 @@ export class ChromaSync {
       // Get combined SSL certificate bundle for Zscaler/corporate proxy environments
       const combinedCertPath = this.getCombinedCertPath();
 
+      // Use custom MCP server for configurable embedding functions
+      // Supports: default (all-MiniLM-L6-v2), sentence-transformers/*, dashscope:*
+      const embeddingFunc = settings.CLAUDE_MEM_EMBEDDING_FUNCTION || 'default';
+      const mcpServerPath = path.join(__dirname, 'chroma-mcp-server.py');
+
+      // Build args for custom MCP server
+      const mcpArgs = [
+        'run', '--python', pythonVersion,
+        mcpServerPath,
+        '--data-dir', this.VECTOR_DB_DIR,
+        '--embedding-config', embeddingFunc,
+      ];
+
+      // Add API credentials for remote embedding (e.g., dashscope:text-embedding-v3)
+      if (embeddingFunc.startsWith('dashscope:')) {
+        const apiKey = settings.CLAUDE_MEM_DASHSCOPE_API_KEY || getCredential('DASHSCOPE_API_KEY') || '';
+        if (apiKey) {
+          mcpArgs.push('--api-key', apiKey);
+        }
+      }
+
       const transportOptions: any = {
-        command: 'uvx',
-        args: [
-          '--python', pythonVersion,
-          'chroma-mcp',
-          '--client-type', 'persistent',
-          '--data-dir', this.VECTOR_DB_DIR
-        ],
+        command: 'uv',
+        args: mcpArgs,
         stderr: 'ignore'
       };
 
@@ -792,7 +809,7 @@ export class ChromaSync {
     let offset = 0;
     const limit = 1000; // Large batches, metadata only = fast
 
-    logger.info('CHROMA_SYNC', 'Fetching existing Chroma document IDs...', { project: this.project });
+    logger.info('CHROMA_SYNC', 'Fetching existing Chroma document IDs (all projects)...');
 
     while (true) {
       try {
@@ -802,7 +819,6 @@ export class ChromaSync {
             collection_name: this.collectionName,
             limit,
             offset,
-            where: { project: this.project }, // Filter by project
             include: ['metadatas']
           }
         });
@@ -837,18 +853,16 @@ export class ChromaSync {
         offset += limit;
 
         logger.debug('CHROMA_SYNC', 'Fetched batch of existing IDs', {
-          project: this.project,
           offset,
           batchSize: metadatas.length
         });
       } catch (error) {
-        logger.error('CHROMA_SYNC', 'Failed to fetch existing IDs', { project: this.project }, error as Error);
+        logger.error('CHROMA_SYNC', 'Failed to fetch existing IDs', {}, error as Error);
         throw error;
       }
     }
 
     logger.info('CHROMA_SYNC', 'Existing IDs fetched', {
-      project: this.project,
       observations: observationIds.size,
       summaries: summaryIds.size,
       prompts: promptIds.size,
@@ -872,11 +886,11 @@ export class ChromaSync {
   async ensureBackfilled(): Promise<void> {
     if (this.disabled) return;
 
-    logger.info('CHROMA_SYNC', 'Starting smart backfill', { project: this.project });
+    logger.info('CHROMA_SYNC', 'Starting smart backfill (all projects)');
 
     await this.ensureCollection();
 
-    // Fetch existing IDs from Chroma (fast, metadata only)
+    // Fetch existing IDs from Chroma (fast, metadata only, all projects)
     const existing = await this.getExistingChromaIds();
 
     const db = new SessionStore();
@@ -885,22 +899,21 @@ export class ChromaSync {
       // Build exclusion list for observations
       const existingObsIds = Array.from(existing.observations);
       const obsExclusionClause = existingObsIds.length > 0
-        ? `AND id NOT IN (${existingObsIds.join(',')})`
+        ? `WHERE id NOT IN (${existingObsIds.join(',')})`
         : '';
 
-      // Get only observations missing from Chroma
+      // Get all observations missing from Chroma (across all projects)
       const observations = db.db.prepare(`
         SELECT * FROM observations
-        WHERE project = ? ${obsExclusionClause}
+        ${obsExclusionClause}
         ORDER BY id ASC
-      `).all(this.project) as StoredObservation[];
+      `).all() as StoredObservation[];
 
-      const totalObsCount = db.db.prepare(`
-        SELECT COUNT(*) as count FROM observations WHERE project = ?
-      `).get(this.project) as { count: number };
+      const totalObsCount = db.db.prepare(
+        `SELECT COUNT(*) as count FROM observations`
+      ).get() as { count: number };
 
       logger.info('CHROMA_SYNC', 'Backfilling observations', {
-        project: this.project,
         missing: observations.length,
         existing: existing.observations.size,
         total: totalObsCount.count
@@ -917,8 +930,7 @@ export class ChromaSync {
         const batch = allDocs.slice(i, i + this.BATCH_SIZE);
         await this.addDocuments(batch);
 
-        logger.debug('CHROMA_SYNC', 'Backfill progress', {
-          project: this.project,
+        logger.debug('CHROMA_SYNC', 'Backfill progress (observations)', {
           progress: `${Math.min(i + this.BATCH_SIZE, allDocs.length)}/${allDocs.length}`
         });
       }
@@ -926,22 +938,21 @@ export class ChromaSync {
       // Build exclusion list for summaries
       const existingSummaryIds = Array.from(existing.summaries);
       const summaryExclusionClause = existingSummaryIds.length > 0
-        ? `AND id NOT IN (${existingSummaryIds.join(',')})`
+        ? `WHERE id NOT IN (${existingSummaryIds.join(',')})`
         : '';
 
-      // Get only summaries missing from Chroma
+      // Get all summaries missing from Chroma (across all projects)
       const summaries = db.db.prepare(`
         SELECT * FROM session_summaries
-        WHERE project = ? ${summaryExclusionClause}
+        ${summaryExclusionClause}
         ORDER BY id ASC
-      `).all(this.project) as StoredSummary[];
+      `).all() as StoredSummary[];
 
-      const totalSummaryCount = db.db.prepare(`
-        SELECT COUNT(*) as count FROM session_summaries WHERE project = ?
-      `).get(this.project) as { count: number };
+      const totalSummaryCount = db.db.prepare(
+        `SELECT COUNT(*) as count FROM session_summaries`
+      ).get() as { count: number };
 
       logger.info('CHROMA_SYNC', 'Backfilling summaries', {
-        project: this.project,
         missing: summaries.length,
         existing: existing.summaries.size,
         total: totalSummaryCount.count
@@ -958,8 +969,7 @@ export class ChromaSync {
         const batch = summaryDocs.slice(i, i + this.BATCH_SIZE);
         await this.addDocuments(batch);
 
-        logger.debug('CHROMA_SYNC', 'Backfill progress', {
-          project: this.project,
+        logger.debug('CHROMA_SYNC', 'Backfill progress (summaries)', {
           progress: `${Math.min(i + this.BATCH_SIZE, summaryDocs.length)}/${summaryDocs.length}`
         });
       }
@@ -970,7 +980,7 @@ export class ChromaSync {
         ? `AND up.id NOT IN (${existingPromptIds.join(',')})`
         : '';
 
-      // Get only user prompts missing from Chroma
+      // Get all user prompts missing from Chroma (across all projects)
       const prompts = db.db.prepare(`
         SELECT
           up.*,
@@ -978,19 +988,17 @@ export class ChromaSync {
           s.memory_session_id
         FROM user_prompts up
         JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
-        WHERE s.project = ? ${promptExclusionClause}
+        WHERE 1=1 ${promptExclusionClause}
         ORDER BY up.id ASC
-      `).all(this.project) as StoredUserPrompt[];
+      `).all() as StoredUserPrompt[];
 
       const totalPromptCount = db.db.prepare(`
         SELECT COUNT(*) as count
         FROM user_prompts up
         JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
-        WHERE s.project = ?
-      `).get(this.project) as { count: number };
+      `).get() as { count: number };
 
       logger.info('CHROMA_SYNC', 'Backfilling user prompts', {
-        project: this.project,
         missing: prompts.length,
         existing: existing.prompts.size,
         total: totalPromptCount.count
@@ -1007,8 +1015,7 @@ export class ChromaSync {
         const batch = promptDocs.slice(i, i + this.BATCH_SIZE);
         await this.addDocuments(batch);
 
-        logger.debug('CHROMA_SYNC', 'Backfill progress', {
-          project: this.project,
+        logger.debug('CHROMA_SYNC', 'Backfill progress (prompts)', {
           progress: `${Math.min(i + this.BATCH_SIZE, promptDocs.length)}/${promptDocs.length}`
         });
       }
@@ -1016,22 +1023,21 @@ export class ChromaSync {
       // Build exclusion list for AI analyses
       const existingAnalysisIds = Array.from(existing.aiAnalyses);
       const analysisExclusionClause = existingAnalysisIds.length > 0
-        ? `AND id NOT IN (${existingAnalysisIds.join(',')})`
+        ? `WHERE id NOT IN (${existingAnalysisIds.join(',')})`
         : '';
 
-      // Get only AI analyses missing from Chroma
+      // Get all AI analyses missing from Chroma (across all projects)
       const analyses = db.db.prepare(`
         SELECT * FROM ai_analysis
-        WHERE project = ? ${analysisExclusionClause}
+        ${analysisExclusionClause}
         ORDER BY id ASC
-      `).all(this.project) as StoredAIAnalysis[];
+      `).all() as StoredAIAnalysis[];
 
-      const totalAnalysisCount = db.db.prepare(`
-        SELECT COUNT(*) as count FROM ai_analysis WHERE project = ?
-      `).get(this.project) as { count: number };
+      const totalAnalysisCount = db.db.prepare(
+        `SELECT COUNT(*) as count FROM ai_analysis`
+      ).get() as { count: number };
 
       logger.info('CHROMA_SYNC', 'Backfilling AI analyses', {
-        project: this.project,
         missing: analyses.length,
         existing: existing.aiAnalyses.size,
         total: totalAnalysisCount.count
@@ -1048,14 +1054,12 @@ export class ChromaSync {
         const batch = analysisDocs.slice(i, i + this.BATCH_SIZE);
         await this.addDocuments(batch);
 
-        logger.debug('CHROMA_SYNC', 'Backfill progress', {
-          project: this.project,
+        logger.debug('CHROMA_SYNC', 'Backfill progress (analyses)', {
           progress: `${Math.min(i + this.BATCH_SIZE, analysisDocs.length)}/${analysisDocs.length}`
         });
       }
 
-      logger.info('CHROMA_SYNC', 'Smart backfill complete', {
-        project: this.project,
+      logger.info('CHROMA_SYNC', 'Smart backfill complete (all projects)', {
         synced: {
           observationDocs: allDocs.length,
           summaryDocs: summaryDocs.length,
@@ -1071,7 +1075,7 @@ export class ChromaSync {
       });
 
     } catch (error) {
-      logger.error('CHROMA_SYNC', 'Backfill failed', { project: this.project }, error as Error);
+      logger.error('CHROMA_SYNC', 'Backfill failed', {}, error as Error);
       throw new Error(`Backfill failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       db.close();

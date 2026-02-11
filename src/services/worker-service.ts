@@ -94,6 +94,7 @@ import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
 import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from './worker/GeminiAgent.js';
 import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterAgent.js';
+import { DashScopeAgent, isDashScopeSelected, isDashScopeAvailable } from './worker/DashScopeAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
@@ -158,6 +159,7 @@ export class WorkerService {
   private sdkAgent: SDKAgent;
   private geminiAgent: GeminiAgent;
   private openRouterAgent: OpenRouterAgent;
+  private dashScopeAgent: DashScopeAgent;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
@@ -188,6 +190,7 @@ export class WorkerService {
     this.sdkAgent = new SDKAgent(this.dbManager, this.sessionManager);
     this.geminiAgent = new GeminiAgent(this.dbManager, this.sessionManager);
     this.openRouterAgent = new OpenRouterAgent(this.dbManager, this.sessionManager);
+    this.dashScopeAgent = new DashScopeAgent(this.dbManager, this.sessionManager);
 
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
@@ -283,15 +286,31 @@ export class WorkerService {
 
     // Standard routes (registered AFTER guard middleware)
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this));
+    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.dashScopeAgent, this.sessionEventBroadcaster, this));
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
-    // Settings routes with callback to sync budget config when settings change
-    this.server.registerRoutes(new SettingsRoutes(this.settingsManager, () => {
-      // Sync budget controller config when settings are updated
-      if (this.budgetController) {
-        this.budgetController.syncConfigToState();
+    // Settings routes with callbacks for settings changes and vector DB reset
+    this.server.registerRoutes(new SettingsRoutes(
+      this.settingsManager,
+      () => {
+        // Sync budget controller config when settings are updated
+        if (this.budgetController) {
+          this.budgetController.syncConfigToState();
+        }
+      },
+      () => {
+        // Hot-reload ChromaSync after vector DB reset (no process restart needed)
+        const chromaSync = this.dbManager.getChromaSync();
+        chromaSync.close().then(() => {
+          logger.info('CHROMA', 'ChromaSync reset after vector DB deletion');
+          // Trigger backfill to re-index all data with new embedding model
+          chromaSync.ensureBackfilled().catch((error) => {
+            logger.warn('CHROMA', 'Vector backfill after reset failed (non-fatal)', {}, error as Error);
+          });
+        }).catch((error) => {
+          logger.warn('CHROMA', 'ChromaSync close failed during reset', {}, error as Error);
+        });
       }
-    }));
+    ));
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
   }
@@ -373,6 +392,7 @@ export class WorkerService {
       this.sdkAgent.setBudgetController(this.budgetController);
       this.geminiAgent.setBudgetController(this.budgetController);
       this.openRouterAgent.setBudgetController(this.budgetController);
+      this.dashScopeAgent.setBudgetController(this.budgetController);
       logger.info('BUDGET', 'BudgetController initialized and connected to agents');
 
       // Connect to MCP server
@@ -396,6 +416,12 @@ export class WorkerService {
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
       logger.info('SYSTEM', 'Background initialization complete');
+
+      // Backfill vector database (fire-and-forget, non-blocking)
+      // Re-indexes any observations missing from ChromaDB (e.g., after vector DB reset)
+      this.dbManager.getChromaSync().ensureBackfilled().catch((error) => {
+        logger.warn('CHROMA', 'Vector backfill failed (non-fatal)', {}, error as Error);
+      });
 
       // Start orphan reaper to clean up zombie processes (Issue #737)
       this.stopOrphanReaper = startOrphanReaper(() => {
@@ -429,7 +455,10 @@ export class WorkerService {
    * Get the appropriate agent based on provider settings.
    * Same logic as SessionRoutes.getActiveAgent() for consistency.
    */
-  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent {
+  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent | DashScopeAgent {
+    if (isDashScopeSelected() && isDashScopeAvailable()) {
+      return this.dashScopeAgent;
+    }
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return this.openRouterAgent;
     }
@@ -604,14 +633,26 @@ export class WorkerService {
         await this.openRouterAgent.startSession(session, this);
         return;
       } catch (e) {
-        logger.warn('SDK', 'Fallback OpenRouter failed', {
+        logger.warn('SDK', 'Fallback OpenRouter failed, trying DashScope', {
           sessionId: sessionDbId,
           error: e instanceof Error ? e.message : String(e)
         });
       }
     }
 
-    // No fallback or both failed: mark messages abandoned and remove session so queue doesn't grow
+    if (isDashScopeAvailable()) {
+      try {
+        await this.dashScopeAgent.startSession(session, this);
+        return;
+      } catch (e) {
+        logger.warn('SDK', 'Fallback DashScope failed', {
+          sessionId: sessionDbId,
+          error: e instanceof Error ? e.message : String(e)
+        });
+      }
+    }
+
+    // No fallback or all failed: mark messages abandoned and remove session so queue doesn't grow
     const pendingStore = this.sessionManager.getPendingMessageStore();
     const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
     if (abandoned > 0) {

@@ -11,4 +11,7 @@ export const TIMING = {
 
   /** Duration to display save status message before clearing */
   SAVE_STATUS_DISPLAY_DURATION_MS: 3000,
+
+  /** Maximum time to wait for embedding model test before auto-cancelling */
+  EMBEDDING_TEST_TIMEOUT_MS: 300_000,
 } as const;

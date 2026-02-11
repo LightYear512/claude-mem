@@ -480,6 +480,31 @@ Claude-mem 依赖**真实使用场景和手动测试**而非传统单元测试�
 
 或使用 `npm version` 命令自动化部分步骤。
 
+### Fork 项目开发原则
+
+本项目是 upstream (thedotmack/claude-mem) 的 fork,`main` 分支跟踪 upstream,`dev` 分支是我们的开发分支。
+
+**分析问题时必须区分问题来源:**
+- **upstream 的 bug** → 修复必须谨慎,因为我们的改动可能导致后续 merge upstream 时产生冲突或难以合并。应优先考虑:向 upstream 提 issue/PR、以最小侵入方式修复、或等待 upstream 自行修复。
+- **我们 dev 分支的 bug** → 直接修复即可,不影响 upstream 合并。
+
+**分析方法:**
+```bash
+# 查看某文件仅在 dev 上的改动(我们的修改)
+git log --oneline dev --not main -- <file>
+
+# 查看某文件在 main 上的改动(upstream 的修改)
+git log --oneline main -- <file>
+
+# 检查某个 commit 属于哪个分支
+git branch --contains <commit-hash>
+```
+
+**修改 upstream 代码的注意事项:**
+- 尽量保持与 upstream 代码结构一致,避免大范围重构
+- 修复 upstream bug 时,优先在不改动 upstream 文件的前提下用 wrapper/override 方式处理
+- 如果必须修改 upstream 文件,记录修改原因和对应的 upstream issue 编号
+
 ---
 
 ## 调试

@@ -7,7 +7,8 @@
 
 import express, { Request, Response } from 'express';
 import path from 'path';
-import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync, rmSync } from 'fs';
+import { execFile } from 'child_process';
 import { homedir } from 'os';
 import { getPackageRoot } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
@@ -19,11 +20,93 @@ import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsMana
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { testGeminiConnection } from '../../GeminiAgent.js';
 import { testOpenRouterConnection } from '../../OpenRouterAgent.js';
+import { testDashScopeConnection } from '../../DashScopeAgent.js';
+
+const VALID_EMBEDDING_MODELS = [
+  'default',
+  'sentence-transformers/multilingual-MiniLM-L12-v2',
+  'sentence-transformers/paraphrase-multilingual-mpnet-base-v2',
+  'shibing624/text2vec-base-chinese',
+  'dashscope:text-embedding-v3',
+  'dashscope:text-embedding-v4',
+];
+
+const EMBEDDING_MODEL_METADATA = [
+  {
+    id: 'default',
+    name: 'all-MiniLM-L6-v2',
+    group: 'English',
+    description: 'Fast, lightweight, English-optimized',
+    dimensions: 384,
+    size: '~80 MB',
+    languages: 'English',
+    cachePaths: [
+      path.join(homedir(), '.cache', 'chroma', 'onnx_models', 'all-MiniLM-L6-v2', 'onnx', 'model.onnx'),
+    ],
+  },
+  {
+    id: 'sentence-transformers/multilingual-MiniLM-L12-v2',
+    name: 'multilingual-MiniLM-L12-v2',
+    group: 'Multilingual',
+    description: 'Supports 50+ languages including Chinese',
+    dimensions: 384,
+    size: '~470 MB',
+    languages: '50+ languages',
+    cachePaths: [
+      path.join(homedir(), '.cache', 'huggingface', 'hub', 'models--sentence-transformers--multilingual-MiniLM-L12-v2'),
+    ],
+  },
+  {
+    id: 'sentence-transformers/paraphrase-multilingual-mpnet-base-v2',
+    name: 'paraphrase-multilingual-mpnet-base-v2',
+    group: 'Multilingual',
+    description: 'High quality, 50+ languages, slower',
+    dimensions: 768,
+    size: '~1 GB',
+    languages: '50+ languages',
+    cachePaths: [
+      path.join(homedir(), '.cache', 'huggingface', 'hub', 'models--sentence-transformers--paraphrase-multilingual-mpnet-base-v2'),
+    ],
+  },
+  {
+    id: 'shibing624/text2vec-base-chinese',
+    name: 'text2vec-base-chinese',
+    group: 'Chinese',
+    description: 'Best Chinese semantic understanding',
+    dimensions: 768,
+    size: '~400 MB',
+    languages: 'Chinese',
+    cachePaths: [
+      path.join(homedir(), '.cache', 'huggingface', 'hub', 'models--shibing624--text2vec-base-chinese'),
+    ],
+  },
+  {
+    id: 'dashscope:text-embedding-v3',
+    name: 'text-embedding-v3',
+    group: 'Remote API',
+    description: 'DashScope embedding (50+ languages, 1024 dim, remote)',
+    dimensions: 1024,
+    size: 'Remote API (no download)',
+    languages: '50+ languages',
+    cachePaths: [],  // No local cache, remote API
+  },
+  {
+    id: 'dashscope:text-embedding-v4',
+    name: 'text-embedding-v4',
+    group: 'Remote API',
+    description: 'DashScope latest embedding (100+ languages, 1024 dim, remote)',
+    dimensions: 1024,
+    size: 'Remote API (no download)',
+    languages: '100+ languages',
+    cachePaths: [],  // No local cache, remote API
+  },
+];
 
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
     private settingsManager: SettingsManager,
-    private onSettingsUpdated?: () => void
+    private onSettingsUpdated?: () => void,
+    private onVectorReset?: () => void
   ) {
     super();
   }
@@ -44,6 +127,15 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     // Connection test endpoint
     app.post('/api/settings/test-connection', this.handleTestConnection.bind(this));
+
+    // Vector database reset endpoint
+    app.post('/api/settings/reset-vectors', this.handleResetVectors.bind(this));
+
+    // Embedding model test endpoint
+    app.post('/api/settings/test-embedding', this.handleTestEmbedding.bind(this));
+
+    // Embedding model metadata endpoint
+    app.get('/api/settings/embedding-models', this.handleGetEmbeddingModels.bind(this));
   }
 
   /**
@@ -108,6 +200,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
       'CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES',
       'CLAUDE_MEM_OPENROUTER_MAX_TOKENS',
+      // DashScope Configuration
+      'CLAUDE_MEM_DASHSCOPE_API_KEY',
+      'CLAUDE_MEM_DASHSCOPE_MODEL',
+      'CLAUDE_MEM_DASHSCOPE_MAX_CONTEXT_MESSAGES',
+      'CLAUDE_MEM_DASHSCOPE_MAX_TOKENS',
       // System Configuration
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
@@ -136,6 +233,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_BUDGET_MONTHLY_LIMIT',
       'CLAUDE_MEM_BUDGET_CUSTOM_PRICING',
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
+      // Vector Search Configuration
+      'CLAUDE_MEM_EMBEDDING_FUNCTION',
     ];
 
     for (const key of settingKeys) {
@@ -257,9 +356,9 @@ export class SettingsRoutes extends BaseRouteHandler {
   private validateSettings(settings: any): { valid: boolean; error?: string } {
     // Validate CLAUDE_MEM_PROVIDER
     if (settings.CLAUDE_MEM_PROVIDER) {
-    const validProviders = ['claude', 'gemini', 'openrouter'];
+    const validProviders = ['claude', 'gemini', 'openrouter', 'dashscope'];
     if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openrouter"' };
+      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", or "dashscope"' };
       }
     }
 
@@ -361,6 +460,22 @@ export class SettingsRoutes extends BaseRouteHandler {
       const tokens = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS, 10);
       if (isNaN(tokens) || tokens < 1000 || tokens > 1000000) {
         return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_MAX_TOKENS must be between 1000 and 1000000' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_DASHSCOPE_MAX_CONTEXT_MESSAGES
+    if (settings.CLAUDE_MEM_DASHSCOPE_MAX_CONTEXT_MESSAGES) {
+      const count = parseInt(settings.CLAUDE_MEM_DASHSCOPE_MAX_CONTEXT_MESSAGES, 10);
+      if (isNaN(count) || count < 1 || count > 100) {
+        return { valid: false, error: 'CLAUDE_MEM_DASHSCOPE_MAX_CONTEXT_MESSAGES must be between 1 and 100' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_DASHSCOPE_MAX_TOKENS
+    if (settings.CLAUDE_MEM_DASHSCOPE_MAX_TOKENS) {
+      const tokens = parseInt(settings.CLAUDE_MEM_DASHSCOPE_MAX_TOKENS, 10);
+      if (isNaN(tokens) || tokens < 1000 || tokens > 1000000) {
+        return { valid: false, error: 'CLAUDE_MEM_DASHSCOPE_MAX_TOKENS must be between 1000 and 1000000' };
       }
     }
 
@@ -520,6 +635,17 @@ export class SettingsRoutes extends BaseRouteHandler {
           }
           break;
 
+        case 'dashscope':
+          const dashscopeApiKey = settings?.CLAUDE_MEM_DASHSCOPE_API_KEY || '';
+          const dashscopeModel = settings?.CLAUDE_MEM_DASHSCOPE_MODEL || 'qwen-plus';
+
+          if (!dashscopeApiKey) {
+            result = { success: false, message: 'DashScope API key is required' };
+          } else {
+            result = await testDashScopeConnection(dashscopeApiKey, dashscopeModel);
+          }
+          break;
+
         default:
           result = { success: false, message: `Unknown provider: ${provider}` };
       }
@@ -531,6 +657,199 @@ export class SettingsRoutes extends BaseRouteHandler {
       res.json({
         success: false,
         message: `Connection failed: ${errorMessage}`
+      });
+    }
+  });
+
+  /**
+   * POST /api/settings/test-embedding - Test an embedding model by loading it via uvx/sentence-transformers
+   * Triggers model download on first use and validates it produces valid embeddings.
+   */
+  private handleTestEmbedding = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { model } = req.body;
+
+    if (!model) {
+      res.status(400).json({ success: false, error: 'Missing model parameter' });
+      return;
+    }
+
+    // Strip dimensions suffix for DashScope configs (e.g. "dashscope:text-embedding-v3:512" → "dashscope:text-embedding-v3")
+    const baseModel = model.startsWith('dashscope:') ? model.split(':').slice(0, 2).join(':') : model;
+    if (!VALID_EMBEDDING_MODELS.includes(baseModel)) {
+      res.status(400).json({ success: false, message: `Unknown embedding model: ${model}` });
+      return;
+    }
+
+    logger.info('SETTINGS', 'Testing embedding model', { model });
+
+    // DashScope remote embedding: test via HTTP API directly
+    if (model.startsWith('dashscope:')) {
+      const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+      const currentSettings = SettingsDefaultsManager.loadFromFile(settingsPath);
+      const apiKey = req.body.apiKey || currentSettings.CLAUDE_MEM_DASHSCOPE_API_KEY || '';
+
+      if (!apiKey) {
+        res.json({ success: false, message: 'DashScope API key is required to test remote embedding' });
+        return;
+      }
+
+      const modelParts = model.split(':');
+      const embeddingModel = modelParts[1]; // e.g., 'text-embedding-v3'
+      const requestedDimensions = modelParts.length >= 3 && /^\d+$/.test(modelParts[2]) ? parseInt(modelParts[2], 10) : undefined;
+      const apiUrl = 'https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings';
+
+      try {
+        const requestBody: Record<string, unknown> = {
+          model: embeddingModel,
+          input: ['test embedding'],
+          encoding_format: 'float',
+        };
+        if (requestedDimensions) {
+          requestBody.dimensions = requestedDimensions;
+        }
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+          signal: AbortSignal.timeout(30000),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          res.json({ success: false, message: `DashScope API error (${response.status}): ${errorText}` });
+          return;
+        }
+
+        const data = await response.json() as { data?: Array<{ embedding?: number[] }> };
+        const dimensions = data?.data?.[0]?.embedding?.length;
+
+        if (dimensions) {
+          res.json({ success: true, message: 'Remote embedding model working', dimensions });
+        } else {
+          res.json({ success: false, message: 'Unexpected API response format' });
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        res.json({ success: false, message: `DashScope embedding test failed: ${errorMessage}` });
+      }
+      return;
+    }
+
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION || '3.13';
+
+    // Build Python test code - use env var to avoid injection
+    const pythonCode = model === 'default'
+      ? [
+          'import os, sys',
+          'try:',
+          '    from chromadb.utils.embedding_functions import DefaultEmbeddingFunction',
+          '    ef = DefaultEmbeddingFunction()',
+          '    r = ef(["test embedding"])',
+          '    print(f"OK:{len(r[0])}")',
+          'except Exception as e:',
+          '    print(f"ERROR:{e}", file=sys.stderr)',
+          '    sys.exit(1)',
+        ].join('\n')
+      : [
+          'import os, sys',
+          'model_name = os.environ["EMBEDDING_MODEL"]',
+          'try:',
+          '    from sentence_transformers import SentenceTransformer',
+          '    m = SentenceTransformer(model_name)',
+          '    r = m.encode(["test embedding"])',
+          '    print(f"OK:{len(r[0])}")',
+          'except Exception as e:',
+          '    print(f"ERROR:{e}", file=sys.stderr)',
+          '    sys.exit(1)',
+        ].join('\n');
+
+    const args = model === 'default'
+      ? ['--python', pythonVersion, '--with', 'chromadb', 'python', '-c', pythonCode]
+      : ['--python', pythonVersion, '--with', 'sentence-transformers', 'python', '-c', pythonCode];
+
+    const env = { ...process.env, EMBEDDING_MODEL: model };
+
+    try {
+      const result = await new Promise<{ success: boolean; message: string; dimensions?: number }>((resolve) => {
+        execFile('uvx', args, { env, timeout: 300000 }, (error, stdout, stderr) => {
+          if (error) {
+            const msg = stderr?.trim() || error.message;
+            resolve({ success: false, message: msg.startsWith('ERROR:') ? msg.slice(6) : msg });
+            return;
+          }
+
+          const output = stdout.trim();
+          const match = output.match(/^OK:(\d+)$/);
+          if (match) {
+            resolve({
+              success: true,
+              message: `Model loaded successfully`,
+              dimensions: parseInt(match[1], 10),
+            });
+          } else {
+            resolve({ success: false, message: `Unexpected output: ${output}` });
+          }
+        });
+      });
+
+      logger.info('SETTINGS', 'Embedding model test result', { model, ...result });
+      res.json(result);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error('SETTINGS', 'Embedding model test failed', { model }, error as Error);
+      res.json({ success: false, message: `Test failed: ${errorMessage}` });
+    }
+  });
+
+  /**
+   * GET /api/settings/embedding-models - Get embedding model metadata with cache status
+   */
+  private handleGetEmbeddingModels = this.wrapHandler((req: Request, res: Response): void => {
+    const models = EMBEDDING_MODEL_METADATA.map(model => ({
+      id: model.id,
+      name: model.name,
+      group: model.group,
+      description: model.description,
+      dimensions: model.dimensions,
+      size: model.size,
+      languages: model.languages,
+      cached: model.cachePaths.some(p => existsSync(p)),
+    }));
+    res.json(models);
+  });
+
+  /**
+   * POST /api/settings/reset-vectors - Reset vector database and restart worker
+   * Deletes the vector-db directory and schedules a worker restart.
+   */
+  private handleResetVectors = this.wrapHandler((req: Request, res: Response): void => {
+    const vectorDbDir = path.join(homedir(), '.claude-mem', 'vector-db');
+
+    try {
+      if (existsSync(vectorDbDir)) {
+        rmSync(vectorDbDir, { recursive: true, force: true });
+        logger.info('WORKER', 'Vector database deleted', { vectorDbDir });
+      } else {
+        logger.info('WORKER', 'Vector database directory does not exist, nothing to delete', { vectorDbDir });
+      }
+
+      // Hot-reload: reset ChromaSync state and trigger backfill (no process restart needed)
+      if (this.onVectorReset) {
+        this.onVectorReset();
+      }
+
+      res.json({ success: true, message: 'Vector database reset. Re-indexing in background.' });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error('WORKER', 'Failed to reset vector database', { vectorDbDir }, error as Error);
+      res.status(500).json({
+        success: false,
+        error: `Failed to reset vector database: ${errorMessage}`
       });
     }
   });

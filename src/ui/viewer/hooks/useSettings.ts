@@ -54,6 +54,16 @@ export function useSettings() {
 
           // Mode Configuration
           CLAUDE_MEM_MODE: data.CLAUDE_MEM_MODE || DEFAULT_SETTINGS.CLAUDE_MEM_MODE,
+
+          // Vector Search Configuration
+          CLAUDE_MEM_EMBEDDING_FUNCTION: data.CLAUDE_MEM_EMBEDDING_FUNCTION || DEFAULT_SETTINGS.CLAUDE_MEM_EMBEDDING_FUNCTION,
+
+          // Budget Tracking Configuration
+          CLAUDE_MEM_BUDGET_ENABLED: data.CLAUDE_MEM_BUDGET_ENABLED || DEFAULT_SETTINGS.CLAUDE_MEM_BUDGET_ENABLED,
+          CLAUDE_MEM_BUDGET_PRESET: data.CLAUDE_MEM_BUDGET_PRESET || DEFAULT_SETTINGS.CLAUDE_MEM_BUDGET_PRESET,
+          CLAUDE_MEM_BUDGET_DAILY_LIMIT: data.CLAUDE_MEM_BUDGET_DAILY_LIMIT || DEFAULT_SETTINGS.CLAUDE_MEM_BUDGET_DAILY_LIMIT,
+          CLAUDE_MEM_BUDGET_MONTHLY_LIMIT: data.CLAUDE_MEM_BUDGET_MONTHLY_LIMIT || DEFAULT_SETTINGS.CLAUDE_MEM_BUDGET_MONTHLY_LIMIT,
+          CLAUDE_MEM_BUDGET_CUSTOM_PRICING: data.CLAUDE_MEM_BUDGET_CUSTOM_PRICING ?? DEFAULT_SETTINGS.CLAUDE_MEM_BUDGET_CUSTOM_PRICING,
         });
       })
       .catch(error => {
@@ -84,5 +94,10 @@ export function useSettings() {
     setIsSaving(false);
   };
 
-  return { settings, saveSettings, isSaving, saveStatus };
+  // Update local state without API call (for use after caller has already saved via API)
+  const applySettings = (newSettings: Settings) => {
+    setSettings(newSettings);
+  };
+
+  return { settings, saveSettings, applySettings, isSaving, saveStatus };
 }
