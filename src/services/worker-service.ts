@@ -912,11 +912,11 @@ async function main() {
   const port = getWorkerPort();
 
   // Helper for JSON status output in 'start' command
-  // Exit code 0 ensures Windows Terminal doesn't keep tabs open
+  // Exit code 0 = success, 1 = non-blocking error (hook contract)
   function exitWithStatus(status: 'ready' | 'error', message?: string): never {
     const output = buildStatusOutput(status, message);
     console.log(JSON.stringify(output));
-    process.exit(0);
+    process.exit(status === 'ready' ? 0 : 1);
   }
 
   switch (command) {
@@ -927,6 +927,7 @@ async function main() {
       } else {
         exitWithStatus('error', 'Failed to start worker');
       }
+      break;
     }
 
     case 'stop': {
@@ -938,6 +939,7 @@ async function main() {
       removePidFile();
       logger.info('SYSTEM', 'Worker stopped successfully');
       process.exit(0);
+      break;
     }
 
     case 'restart': {
@@ -974,6 +976,7 @@ async function main() {
 
       logger.info('SYSTEM', 'Worker restarted successfully');
       process.exit(0);
+      break;
     }
 
     case 'status': {
@@ -988,12 +991,14 @@ async function main() {
         console.log('Worker is not running');
       }
       process.exit(0);
+      break;
     }
 
     case 'cursor': {
       const subcommand = process.argv[3];
       const cursorResult = await handleCursorCommand(subcommand, process.argv.slice(4));
       process.exit(cursorResult);
+      break;
     }
 
     case 'hook': {
@@ -1014,6 +1019,12 @@ async function main() {
       }
 
       // Check if worker is already running on port
+      // Brief delay to let a recently-spawned daemon finish binding the port,
+      // avoiding a race where ensureWorkerStarted spawned a daemon but it hasn't
+      // started listening yet, causing us to unnecessarily start an in-process worker.
+      if (!workerReady) {
+        await new Promise(r => setTimeout(r, 2000));
+      }
       const portInUse = await isPortInUse(port);
       let startedWorkerInProcess = false;
 
@@ -1029,7 +1040,8 @@ async function main() {
         } catch (error) {
           logger.failure('SYSTEM', 'Worker failed to start in hook', {}, error as Error);
           removePidFile();
-          process.exit(0);
+          // Exit 1 = non-blocking error: stderr shown to user, Claude continues
+          process.exit(1);
         }
       }
       // If port in use, we'll use HTTP to the existing worker
@@ -1047,6 +1059,7 @@ async function main() {
       const { generateClaudeMd } = await import('../cli/claude-md-commands.js');
       const result = await generateClaudeMd(dryRun);
       process.exit(result);
+      break;
     }
 
     case 'clean': {
@@ -1054,18 +1067,28 @@ async function main() {
       const { cleanClaudeMd } = await import('../cli/claude-md-commands.js');
       const result = await cleanClaudeMd(dryRun);
       process.exit(result);
+      break;
     }
 
-    case '--daemon':
-    default: {
+    case '--daemon': {
       const worker = new WorkerService();
-      worker.start().catch((error) => {
+      try {
+        await worker.start();
+      } catch (error) {
         logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
         removePidFile();
         // Exit gracefully: Windows Terminal won't keep tab open on exit 0
         // The wrapper/plugin will handle restart logic if needed
         process.exit(0);
-      });
+      }
+      // Event loop keeps process alive as HTTP server
+      break;
+    }
+
+    default: {
+      console.error(`Unknown command: ${command}`);
+      console.error('Usage: worker-service <start|stop|restart|status|hook|cursor|generate|clean>');
+      process.exit(1);
     }
   }
 }

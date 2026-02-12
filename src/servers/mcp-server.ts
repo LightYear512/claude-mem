@@ -28,6 +28,9 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
+import { spawn } from 'child_process';
+import { existsSync } from 'fs';
+import path from 'path';
 
 /**
  * Worker HTTP API configuration
@@ -324,15 +327,64 @@ async function main() {
   await server.connect(transport);
   logger.info('SYSTEM', 'Claude-mem search server started');
 
-  // Check Worker availability in background
+  // Check Worker availability and auto-start if needed
+  // This serves as a fallback when SessionStart hooks don't fire (e.g. after /clear)
   setTimeout(async () => {
     const workerAvailable = await verifyWorkerConnection();
-    if (!workerAvailable) {
-      logger.error('SYSTEM', 'Worker not available', undefined, { workerUrl: WORKER_BASE_URL });
-      logger.error('SYSTEM', 'Tools will fail until Worker is started');
-      logger.error('SYSTEM', 'Start Worker with: npm run worker:restart');
-    } else {
+    if (workerAvailable) {
       logger.info('SYSTEM', 'Worker available', undefined, { workerUrl: WORKER_BASE_URL });
+      return;
+    }
+
+    // Worker not available - try to start it via bun-runner
+    logger.info('SYSTEM', 'Worker not available, attempting auto-start', undefined, { workerUrl: WORKER_BASE_URL });
+    const scriptsDir = path.dirname(__filename);
+    const bunRunner = path.join(scriptsDir, 'bun-runner.js');
+    const workerService = path.join(scriptsDir, 'worker-service.cjs');
+
+    if (!existsSync(bunRunner)) {
+      logger.error('SYSTEM', 'bun-runner.js not found, cannot auto-start worker', undefined, { path: bunRunner });
+      return;
+    }
+    if (!existsSync(workerService)) {
+      logger.error('SYSTEM', 'worker-service.cjs not found, cannot auto-start worker', undefined, { path: workerService });
+      return;
+    }
+
+    try {
+      const child = spawn(process.execPath, [bunRunner, workerService, 'start'], {
+        stdio: 'ignore',
+        detached: true,
+        windowsHide: true,
+      });
+
+      child.on('error', (err) => {
+        logger.error('SYSTEM', 'Worker auto-start child process error', undefined, err);
+      });
+
+      child.unref();
+
+      // Wait for worker to become healthy
+      const maxWait = 30000;
+      const start = Date.now();
+      let healthy = false;
+      while (Date.now() - start < maxWait) {
+        await new Promise(r => setTimeout(r, 1000));
+        if (await verifyWorkerConnection()) {
+          healthy = true;
+          break;
+        }
+      }
+
+      if (healthy) {
+        logger.info('SYSTEM', 'Worker auto-started by MCP server', undefined, { workerUrl: WORKER_BASE_URL });
+      } else {
+        logger.error('SYSTEM', 'Worker auto-start failed (timeout after 30s)', undefined, { workerUrl: WORKER_BASE_URL });
+        logger.error('SYSTEM', 'Start Worker with: npm run worker:restart');
+      }
+    } catch (error) {
+      logger.error('SYSTEM', 'Worker auto-start spawn failed', undefined, error as Error);
+      logger.error('SYSTEM', 'Start Worker with: npm run worker:restart');
     }
   }, 0);
 }
