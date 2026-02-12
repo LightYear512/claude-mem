@@ -131,3 +131,15 @@ export const FALLBACK_ERROR_PATTERNS = [
   'ETIMEDOUT',     // Timeout
   'fetch failed',  // Network failure
 ] as const;
+
+/**
+ * Error patterns indicating unrecoverable spawn/executable failures.
+ * These errors will fail immediately on retry, so generators should NOT restart.
+ * Shared between WorkerService.startSessionProcessor and SessionRoutes.startGeneratorWithProvider.
+ */
+export const UNRECOVERABLE_ERROR_PATTERNS = [
+  'Claude executable not found',
+  'CLAUDE_CODE_PATH',
+  'spawn ENOENT',
+  'spawn EACCES',
+] as const;

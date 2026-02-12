@@ -22,6 +22,7 @@ import { SessionCompletionHandler } from '../../session/SessionCompletionHandler
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { UNRECOVERABLE_ERROR_PATTERNS } from '../../agents/types.js';
 
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
@@ -175,15 +176,76 @@ export class SessionRoutes extends BaseRouteHandler {
     // Track which provider is running
     session.currentProvider = provider;
 
+    // Track whether generator failed with an unrecoverable error to prevent infinite restart loops
+    let hadUnrecoverableError = false;
+
     session.generatorPromise = agent.startSession(session, this.workerService)
-      .catch(error => {
+      .catch(async (error) => {
         // Only log non-abort errors
         if (session.abortController.signal.aborted) return;
-        
+
+        const errorMessage = (error as Error)?.message || '';
+
+        // Detect unrecoverable errors that should NOT trigger restart
+        // These errors will fail immediately on retry, causing infinite loops
+        if (UNRECOVERABLE_ERROR_PATTERNS.some(pattern => errorMessage.includes(pattern))) {
+          hadUnrecoverableError = true;
+          logger.error('SESSION', 'Unrecoverable generator error - will NOT restart', {
+            sessionId: session.sessionDbId,
+            provider,
+            errorMessage
+          });
+          // Mark pending messages as failed since no restart will occur
+          try {
+            const pendingStore = this.sessionManager.getPendingMessageStore();
+            const failedCount = pendingStore.markSessionMessagesFailed(session.sessionDbId);
+            if (failedCount > 0) {
+              logger.warn('SESSION', 'Marked messages as failed due to unrecoverable error', {
+                sessionId: session.sessionDbId,
+                failedCount
+              });
+            }
+          } catch (dbError) {
+            logger.error('SESSION', 'Failed to mark messages as failed', {
+              sessionId: session.sessionDbId
+            }, dbError as Error);
+          }
+          return;
+        }
+
+        // Fallback for terminated SDK sessions (delegate to WorkerService)
+        if (this.workerService.isSessionTerminatedError(error)) {
+          logger.warn('SESSION', 'SDK session terminated, falling back via WorkerService', {
+            sessionId: session.sessionDbId,
+            provider,
+            reason: error instanceof Error ? error.message : String(error)
+          });
+          hadUnrecoverableError = true; // Prevent .finally() restart — fallback handles it
+          try {
+            await this.workerService.runFallbackForTerminatedSession(session, error);
+          } catch (fallbackError) {
+            logger.error('SESSION', 'Fallback for terminated session also failed', {
+              sessionId: session.sessionDbId,
+              provider,
+              error: (fallbackError as Error)?.message || String(fallbackError)
+            }, fallbackError as Error);
+            // Mark pending messages as abandoned so they don't get stuck forever
+            try {
+              const pendingStore = this.sessionManager.getPendingMessageStore();
+              pendingStore.markAllSessionMessagesAbandoned(session.sessionDbId);
+            } catch (cleanupError) {
+              logger.error('SESSION', 'Failed to abandon messages after fallback failure', {
+                sessionId: session.sessionDbId
+              }, cleanupError as Error);
+            }
+          }
+          return;
+        }
+
         logger.error('SESSION', `Generator failed`, {
           sessionId: session.sessionDbId,
           provider: provider,
-          error: error.message
+          error: errorMessage
         }, error);
 
         // Mark all processing messages as failed so they can be retried or abandoned
@@ -206,6 +268,17 @@ export class SessionRoutes extends BaseRouteHandler {
         const sessionDbId = session.sessionDbId;
         this.spawnInProgress.delete(sessionDbId);
         const wasAborted = session.abortController.signal.aborted;
+
+        // Do NOT restart after unrecoverable errors - prevents infinite loops
+        if (hadUnrecoverableError) {
+          logger.warn('SESSION', 'Skipping restart due to unrecoverable error', {
+            sessionId: sessionDbId
+          });
+          session.generatorPromise = null;
+          session.currentProvider = null;
+          this.workerService.broadcastProcessingStatus();
+          return;
+        }
 
         if (wasAborted) {
           logger.info('SESSION', `Generator aborted`, { sessionId: sessionDbId });

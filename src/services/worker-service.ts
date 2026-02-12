@@ -117,6 +117,7 @@ import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
 
 // Process management for zombie cleanup (Issue #737)
 import { startOrphanReaper, reapOrphanedProcesses } from './worker/ProcessRegistry.js';
+import { UNRECOVERABLE_ERROR_PATTERNS } from './worker/agents/types.js';
 
 /**
  * Build JSON status output for hook framework communication.
@@ -179,6 +180,9 @@ export class WorkerService {
 
   // Orphan reaper cleanup function (Issue #737)
   private stopOrphanReaper: (() => void) | null = null;
+
+  // Prevent concurrent fallback execution for the same session
+  private fallbackInProgress = new Set<number>();
 
   constructor() {
     // DB-ready promise: resolves when database is initialized (unblocks guard middleware)
@@ -522,13 +526,7 @@ export class WorkerService {
 
         // Detect unrecoverable errors that should NOT trigger restart
         // These errors will fail immediately on retry, causing infinite loops
-        const unrecoverablePatterns = [
-          'Claude executable not found',
-          'CLAUDE_CODE_PATH',
-          'ENOENT',
-          'spawn',
-        ];
-        if (unrecoverablePatterns.some(pattern => errorMessage.includes(pattern))) {
+        if (UNRECOVERABLE_ERROR_PATTERNS.some(pattern => errorMessage.includes(pattern))) {
           hadUnrecoverableError = true;
           logger.error('SDK', 'Unrecoverable generator error - will NOT restart', {
             sessionId: session.sessionDbId,
@@ -540,6 +538,7 @@ export class WorkerService {
 
         // Fallback for terminated SDK sessions (provider abstraction)
         if (this.isSessionTerminatedError(error)) {
+          hadUnrecoverableError = true; // Prevent .finally() restart — fallback handles it
           logger.warn('SDK', 'SDK resume failed, falling back to standalone processing', {
             sessionId: session.sessionDbId,
             project: session.project,
@@ -604,7 +603,7 @@ export class WorkerService {
    * Match errors that indicate the Claude Code process/session is gone (resume impossible).
    * Used to trigger graceful fallback instead of leaving pending messages stuck forever.
    */
-  private isSessionTerminatedError(error: unknown): boolean {
+  public isSessionTerminatedError(error: unknown): boolean {
     const msg = error instanceof Error ? error.message : String(error);
     const normalized = msg.toLowerCase();
     return (
@@ -620,7 +619,7 @@ export class WorkerService {
    * When SDK resume fails due to terminated session: try Gemini then OpenRouter to drain
    * pending messages; if no fallback available, mark messages abandoned and remove session.
    */
-  private async runFallbackForTerminatedSession(
+  public async runFallbackForTerminatedSession(
     session: ReturnType<typeof this.sessionManager.getSession>,
     _originalError: unknown
   ): Promise<void> {
@@ -628,60 +627,71 @@ export class WorkerService {
 
     const sessionDbId = session.sessionDbId;
 
-    // Fallback agents need memorySessionId for storeObservations
-    if (!session.memorySessionId) {
-      const syntheticId = `fallback-${sessionDbId}-${Date.now()}`;
-      session.memorySessionId = syntheticId;
-      this.dbManager.getSessionStore().updateMemorySessionId(sessionDbId, syntheticId);
+    // Prevent concurrent fallback execution for the same session
+    if (this.fallbackInProgress.has(sessionDbId)) {
+      logger.debug('SDK', 'Fallback already in progress, skipping', { sessionId: sessionDbId });
+      return;
     }
+    this.fallbackInProgress.add(sessionDbId);
 
-    if (isGeminiAvailable()) {
-      try {
-        await this.geminiAgent.startSession(session, this);
-        return;
-      } catch (e) {
-        logger.warn('SDK', 'Fallback Gemini failed, trying OpenRouter', {
+    try {
+      // Fallback agents need memorySessionId for storeObservations
+      if (!session.memorySessionId) {
+        const syntheticId = `fallback-${sessionDbId}-${Date.now()}`;
+        session.memorySessionId = syntheticId;
+        this.dbManager.getSessionStore().updateMemorySessionId(sessionDbId, syntheticId);
+      }
+
+      if (isGeminiAvailable()) {
+        try {
+          await this.geminiAgent.startSession(session, this);
+          return;
+        } catch (e) {
+          logger.warn('SDK', 'Fallback Gemini failed, trying OpenRouter', {
+            sessionId: sessionDbId,
+            error: e instanceof Error ? e.message : String(e)
+          });
+        }
+      }
+
+      if (isOpenRouterAvailable()) {
+        try {
+          await this.openRouterAgent.startSession(session, this);
+          return;
+        } catch (e) {
+          logger.warn('SDK', 'Fallback OpenRouter failed, trying DashScope', {
+            sessionId: sessionDbId,
+            error: e instanceof Error ? e.message : String(e)
+          });
+        }
+      }
+
+      if (isDashScopeAvailable()) {
+        try {
+          await this.dashScopeAgent.startSession(session, this);
+          return;
+        } catch (e) {
+          logger.warn('SDK', 'Fallback DashScope failed', {
+            sessionId: sessionDbId,
+            error: e instanceof Error ? e.message : String(e)
+          });
+        }
+      }
+
+      // No fallback or all failed: mark messages abandoned and remove session so queue doesn't grow
+      const pendingStore = this.sessionManager.getPendingMessageStore();
+      const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
+      if (abandoned > 0) {
+        logger.warn('SDK', 'No fallback available; marked pending messages abandoned', {
           sessionId: sessionDbId,
-          error: e instanceof Error ? e.message : String(e)
+          abandoned
         });
       }
+      this.sessionManager.removeSessionImmediate(sessionDbId);
+      this.sessionEventBroadcaster.broadcastSessionCompleted(sessionDbId);
+    } finally {
+      this.fallbackInProgress.delete(sessionDbId);
     }
-
-    if (isOpenRouterAvailable()) {
-      try {
-        await this.openRouterAgent.startSession(session, this);
-        return;
-      } catch (e) {
-        logger.warn('SDK', 'Fallback OpenRouter failed, trying DashScope', {
-          sessionId: sessionDbId,
-          error: e instanceof Error ? e.message : String(e)
-        });
-      }
-    }
-
-    if (isDashScopeAvailable()) {
-      try {
-        await this.dashScopeAgent.startSession(session, this);
-        return;
-      } catch (e) {
-        logger.warn('SDK', 'Fallback DashScope failed', {
-          sessionId: sessionDbId,
-          error: e instanceof Error ? e.message : String(e)
-        });
-      }
-    }
-
-    // No fallback or all failed: mark messages abandoned and remove session so queue doesn't grow
-    const pendingStore = this.sessionManager.getPendingMessageStore();
-    const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
-    if (abandoned > 0) {
-      logger.warn('SDK', 'No fallback available; marked pending messages abandoned', {
-        sessionId: sessionDbId,
-        abandoned
-      });
-    }
-    this.sessionManager.removeSessionImmediate(sessionDbId);
-    this.sessionEventBroadcaster.broadcastSessionCompleted(sessionDbId);
   }
 
   /**

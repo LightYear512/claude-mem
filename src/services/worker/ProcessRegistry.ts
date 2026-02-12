@@ -294,8 +294,41 @@ export function createPidCapturingSpawn(sessionDbId: number) {
     if (child.pid) {
       registerProcess(child.pid, sessionDbId, child);
 
-      // Auto-unregister on exit
-      child.on('exit', () => {
+      // Buffer stderr for diagnostics on crash (e.g., Windows exit code 1 with no info)
+      // Cap at 16KB to prevent OOM from verbose subprocesses; track lifetime total separately
+      const stderrChunks: Buffer[] = [];
+      let stderrBufferedBytes = 0;
+      let stderrLifetimeBytes = 0;
+      const MAX_STDERR_BUFFER = 16 * 1024;
+      if (child.stderr) {
+        child.stderr.on('data', (chunk: Buffer) => {
+          stderrLifetimeBytes += chunk.length;
+          stderrBufferedBytes += chunk.length;
+          stderrChunks.push(chunk);
+          while (stderrBufferedBytes > MAX_STDERR_BUFFER && stderrChunks.length > 1) {
+            const evicted = stderrChunks.shift()!;
+            stderrBufferedBytes -= evicted.length;
+          }
+        });
+      }
+
+      // Auto-unregister on exit + log stderr on non-zero exit
+      child.on('exit', (exitCode, signal) => {
+        if (exitCode !== null && exitCode !== 0) {
+          const stderr = Buffer.concat(stderrChunks).toString('utf-8').trim();
+          const truncated = stderr.length > 2000 ? stderr.slice(0, 2000) + '... (truncated)' : stderr;
+          logger.error('PROCESS', `Claude subprocess exited with code ${exitCode}`, {
+            pid: child.pid,
+            sessionDbId,
+            exitCode,
+            signal,
+            stderrTotalBytes: stderrLifetimeBytes,
+            stderrBufferedBytes
+          });
+          if (truncated) {
+            logger.debug('PROCESS', `Subprocess stderr`, { pid: child.pid, stderr: truncated });
+          }
+        }
         if (child.pid) {
           unregisterProcess(child.pid);
         }

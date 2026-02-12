@@ -551,6 +551,41 @@ sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
 
 ---
 
+## 代码审查清单
+
+日常开发和 `/review` 命令共用的审查规则。发现新的反模式时应及时补充。
+
+### 控制流与错误处理
+- switch/case 必须有 `break`/`return`，尤其是 `process.exit()` 后面
+- Hook 退出码契约：0=成功, 1=非阻塞错误, 2=阻塞错误
+- Worker 错误用退出码 0（防止 Windows Terminal 标签页累积）
+- 不吞异常：catch 块必须 log 或 re-throw，禁止空 catch
+- async 函数必须 `await`，不允许 fire-and-forget
+- `process.exit()` 前必须 `await` 所有未完成的异步操作
+
+### 并发与竞态条件
+- 端口绑定需要重试或冲突检测
+- 进程启动后必须等待就绪信号，不能假设立即可用
+- PID 文件的读写需要原子操作（避免 TOCTOU）
+- 健康检查区分 liveness vs readiness
+- `setTimeout`/`setInterval` 在关闭时必须清理
+- DB 写操作使用事务保护，避免 read-then-write 竞态
+
+### 平台兼容性
+- 避免硬编码 Unix 路径，使用 `path.join()` 和跨平台 API
+- `localhost` vs `127.0.0.1`：WSL2 场景下注意 Origin 检查
+- 文件权限（chmod）在 Windows 上不生效，需要条件处理
+- 进程管理（detached, unref, stdio）在不同平台行为不同
+
+### 安全
+- 用户输入不直接传入 shell 命令（防注入）
+- 文件路径需验证，防止路径穿越
+- SQL 使用参数化查询，禁止字符串拼接
+- API 边界做输入长度和类型校验
+- 错误信息不暴露 secrets/tokens
+
+---
+
 ## 许可证
 
 **主项目:** AGPL-3.0 - 如果在网络服务器上修改和部署,必须提供源代码。
