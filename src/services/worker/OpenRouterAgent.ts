@@ -375,7 +375,7 @@ export class OpenRouterAgent {
     if (this.budgetController && this.budgetController.isTrackingEnabled()) {
       const estimatedCost = this.budgetController.estimateCost(estimatedTokens);
 
-      const reserveResult = this.budgetController.reserve(estimatedCost, 'openrouter', sessionDbId);
+      const reserveResult = await this.budgetController.reserve(estimatedCost, 'openrouter', sessionDbId);
       if (!reserveResult.success) {
         logger.warn('BUDGET', 'OpenRouter request blocked by budget limit', {
           reason: reserveResult.reason,
@@ -472,9 +472,15 @@ export class OpenRouterAgent {
     } catch (error) {
       // Rollback on API failure
       if (txId && this.budgetController) {
-        const reason = (error as Error).message || 'API error';
-        this.budgetController.rollback(txId, reason);
-        logger.debug('BUDGET', 'OpenRouter cost rolled back', { txId, reason });
+        try {
+          const reason = (error as Error).message || 'API error';
+          this.budgetController.rollback(txId, reason);
+          logger.debug('BUDGET', 'OpenRouter cost rolled back', { txId, reason });
+        } catch (rollbackError) {
+          logger.error('BUDGET', 'Rollback failed, original error preserved', {
+            txId
+          }, rollbackError as Error);
+        }
       }
       throw error;
     }

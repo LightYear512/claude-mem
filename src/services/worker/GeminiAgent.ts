@@ -364,7 +364,7 @@ export class GeminiAgent {
       const estimatedInputTokens = Math.ceil(totalChars / 4);
       const estimatedCost = this.budgetController.estimateCost(estimatedInputTokens);
 
-      const reserveResult = this.budgetController.reserve(estimatedCost, 'gemini', sessionDbId);
+      const reserveResult = await this.budgetController.reserve(estimatedCost, 'gemini', sessionDbId);
       if (!reserveResult.success) {
         logger.warn('BUDGET', 'Gemini request blocked by budget limit', {
           reason: reserveResult.reason,
@@ -438,9 +438,15 @@ export class GeminiAgent {
     } catch (error) {
       // Rollback on API failure
       if (txId && this.budgetController) {
-        const reason = (error as Error).message || 'API error';
-        this.budgetController.rollback(txId, reason);
-        logger.debug('BUDGET', 'Gemini cost rolled back', { txId, reason });
+        try {
+          const reason = (error as Error).message || 'API error';
+          this.budgetController.rollback(txId, reason);
+          logger.debug('BUDGET', 'Gemini cost rolled back', { txId, reason });
+        } catch (rollbackError) {
+          logger.error('BUDGET', 'Rollback failed, original error preserved', {
+            txId
+          }, rollbackError as Error);
+        }
       }
       throw error;
     }

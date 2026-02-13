@@ -95,12 +95,12 @@ export class BudgetController {
    * @param maxRetries - Maximum retry attempts on lock conflict
    * @returns ReserveResult with txId if successful
    */
-  reserve(
+  async reserve(
     estimatedCostUsd: number,
     provider: string,
     sessionDbId?: number,
     maxRetries: number = 3
-  ): ReserveResult {
+  ): Promise<ReserveResult> {
     const config = this.getConfig();
 
     // Skip if budget tracking disabled
@@ -193,11 +193,7 @@ export class BudgetController {
           const delayMs = Math.pow(2, attempt);
           logger.debug('BUDGET', `Optimistic lock conflict, retry ${attempt + 1}/${maxRetries}`, { delayMs });
 
-          // Synchronous wait (Bun doesn't have Bun.sleepSync, use busy wait)
-          const start = Date.now();
-          while (Date.now() - start < delayMs) {
-            // Busy wait
-          }
+          await new Promise(resolve => setTimeout(resolve, delayMs));
           continue;
         }
         throw e;

@@ -65,7 +65,7 @@ export class SDKAgent {
       // Estimate session cost (conservative: ~5000 tokens typical session)
       const estimatedCost = this.budgetController.estimateCost(5000); // 5k tokens estimate
 
-      const reserveResult = this.budgetController.reserve(estimatedCost, 'claude', session.sessionDbId);
+      const reserveResult = await this.budgetController.reserve(estimatedCost, 'claude', session.sessionDbId);
       if (!reserveResult.success) {
         logger.warn('BUDGET', 'SDK session blocked by budget limit', {
           reason: reserveResult.reason,
