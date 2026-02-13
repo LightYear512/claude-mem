@@ -293,7 +293,23 @@ export class SessionManager {
       });
     }
 
-    // 3. Verify subprocess exit with 5s timeout (Issue #737 fix)
+    // 3. Reset orphaned 'processing' messages back to 'pending'
+    // When a generator is aborted mid-processing, claimed messages are left in
+    // 'processing' state forever because .catch() skips cleanup on abort.
+    // These ghost records cause hasAnyPendingWork() to return true permanently,
+    // making the UI spinner show "processing" indefinitely.
+    try {
+      const resetCount = this.getPendingStore().resetProcessingToPending(sessionDbId);
+      if (resetCount > 0) {
+        logger.info('QUEUE', `RESET_ORPHANED | sessionDbId=${sessionDbId} | reset=${resetCount} | reason=session_deleted`);
+      }
+    } catch (error) {
+      logger.error('SESSION', 'Failed to reset orphaned processing messages', {
+        sessionId: sessionDbId
+      }, error as Error);
+    }
+
+    // 4. Verify subprocess exit with 5s timeout (Issue #737 fix)
     const tracked = getProcessBySession(sessionDbId);
     if (tracked && !tracked.process.killed && tracked.process.exitCode === null) {
       logger.debug('SESSION', `Waiting for subprocess PID ${tracked.pid} to exit`, {
@@ -303,7 +319,7 @@ export class SessionManager {
       await ensureProcessExit(tracked, 5000);
     }
 
-    // 4. Cleanup
+    // 5. Cleanup
     this.sessions.delete(sessionDbId);
     this.sessionQueues.delete(sessionDbId);
 
@@ -327,6 +343,20 @@ export class SessionManager {
   removeSessionImmediate(sessionDbId: number): void {
     const session = this.sessions.get(sessionDbId);
     if (!session) return;
+
+    // Reset orphaned 'processing' messages (same as deleteSession step 3)
+    // Callers typically call markAllSessionMessagesAbandoned() first, but
+    // this is a safety net for any future callers that don't.
+    try {
+      const resetCount = this.getPendingStore().resetProcessingToPending(sessionDbId);
+      if (resetCount > 0) {
+        logger.info('QUEUE', `RESET_ORPHANED | sessionDbId=${sessionDbId} | reset=${resetCount} | reason=session_removed_immediate`);
+      }
+    } catch (error) {
+      logger.error('SESSION', 'Failed to reset orphaned processing messages', {
+        sessionId: sessionDbId
+      }, error as Error);
+    }
 
     this.sessions.delete(sessionDbId);
     this.sessionQueues.delete(sessionDbId);
