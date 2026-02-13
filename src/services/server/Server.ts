@@ -217,7 +217,12 @@ export class Server {
       } else {
         // Unix or standalone Windows - handle restart ourselves
         setTimeout(async () => {
-          await this.options.onRestart();
+          try {
+            await this.options.onRestart();
+          } catch (error) {
+            logger.error('SYSTEM', 'Error during restart', {}, error as Error);
+          }
+          process.exit(0);
         }, 100);
       }
     });
@@ -235,8 +240,23 @@ export class Server {
         process.send!({ type: 'shutdown' });
       } else {
         // Unix or standalone Windows - handle shutdown ourselves
+        // Use a hard timeout to prevent deadlock if graceful shutdown hangs
+        // (e.g. SDK agent generator promise never settles on abort)
+        const SHUTDOWN_TIMEOUT_MS = 10_000;
+        const forceExitTimer = setTimeout(() => {
+          logger.warn('SYSTEM', 'Graceful shutdown timed out, forcing exit');
+          process.exit(0);
+        }, SHUTDOWN_TIMEOUT_MS);
+        forceExitTimer.unref();
+
         setTimeout(async () => {
-          await this.options.onShutdown();
+          try {
+            await this.options.onShutdown();
+          } catch (error) {
+            logger.error('SYSTEM', 'Error during shutdown', {}, error as Error);
+          }
+          clearTimeout(forceExitTimer);
+          process.exit(0);
         }, 100);
       }
     });
