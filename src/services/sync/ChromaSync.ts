@@ -93,6 +93,7 @@ export class ChromaSync {
   private client: Client | null = null;
   private transport: StdioClientTransport | null = null;
   private connected: boolean = false;
+  private connectingPromise: Promise<void> | null = null;  // Mutex to prevent concurrent spawns
   private project: string;
   private collectionName: string;
   private readonly VECTOR_DB_DIR: string;
@@ -192,6 +193,8 @@ export class ChromaSync {
 
   /**
    * Ensure MCP client is connected to Chroma server
+   * Uses a promise-based mutex to prevent concurrent calls from spawning
+   * multiple uv/python subprocesses (each ~90MB).
    * Throws error if connection fails
    */
   private async ensureConnection(): Promise<void> {
@@ -199,6 +202,25 @@ export class ChromaSync {
       return;
     }
 
+    // Mutex: if another call is already connecting, wait for it
+    if (this.connectingPromise) {
+      await this.connectingPromise;
+      return;
+    }
+
+    this.connectingPromise = this.doConnect();
+    try {
+      await this.connectingPromise;
+    } finally {
+      this.connectingPromise = null;
+    }
+  }
+
+  /**
+   * Internal: actually create transport and connect to Chroma MCP server.
+   * Called only once at a time, guarded by ensureConnection() mutex.
+   */
+  private async doConnect(): Promise<void> {
     logger.info('CHROMA_SYNC', 'Connecting to Chroma MCP server...', { project: this.project });
 
     try {
@@ -1191,18 +1213,36 @@ export class ChromaSync {
    * Close the Chroma client connection and cleanup subprocess
    */
   async close(): Promise<void> {
+    // Wait for any in-flight connection attempt to settle before tearing down,
+    // otherwise doConnect() can set connected=true on a dead client after we close it.
+    if (this.connectingPromise) {
+      try {
+        await this.connectingPromise;
+      } catch {
+        // Connection failed — that's fine, we're closing anyway
+      }
+    }
+
     if (!this.connected && !this.client && !this.transport) {
       return;
     }
 
-    // Close client first
+    // Close client first (try/catch to ensure transport.close() always runs)
     if (this.client) {
-      await this.client.close();
+      try {
+        await this.client.close();
+      } catch (err) {
+        logger.debug('CHROMA_SYNC', 'Client close error (expected if already dead)', {}, err as Error);
+      }
     }
 
     // Explicitly close transport to kill subprocess
     if (this.transport) {
-      await this.transport.close();
+      try {
+        await this.transport.close();
+      } catch (err) {
+        logger.debug('CHROMA_SYNC', 'Transport close error (expected if already dead)', {}, err as Error);
+      }
     }
 
     logger.info('CHROMA_SYNC', 'Chroma client and subprocess closed', { project: this.project });
@@ -1211,5 +1251,6 @@ export class ChromaSync {
     this.connected = false;
     this.client = null;
     this.transport = null;
+    this.connectingPromise = null;
   }
 }
