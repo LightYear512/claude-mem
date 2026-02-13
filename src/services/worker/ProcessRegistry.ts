@@ -350,7 +350,7 @@ export function createPidCapturingSpawn(sessionDbId: number) {
             stderrBufferedBytes
           });
           if (truncated) {
-            logger.debug('PROCESS', `Subprocess stderr`, { pid: child.pid, stderr: truncated });
+            logger.error('PROCESS', `Subprocess stderr`, { pid: child.pid, stderr: truncated });
           }
         }
         if (child.pid) {
