@@ -129,22 +129,54 @@ export class PendingMessageStore {
 
   /**
    * Reset stale 'processing' messages back to 'pending' for retry.
-   * Called on worker startup and periodically to recover from crashes.
+   *
+   * Two modes:
+   * - crashRecovery=true (startup): resets retry_count to 0 since worker crashes are not message failures
+   * - crashRecovery=false (runtime): increments retry_count, marks messages exceeding maxRetries as failed
+   *
    * @param thresholdMs Messages processing longer than this are considered stale (default: 5 minutes)
-   * @returns Number of messages reset
+   * @param crashRecovery If true, reset retry_count (worker crash). If false, increment retry_count (stale timeout).
+   * @returns Object with count of reset and failed messages
    */
-  resetStaleProcessingMessages(thresholdMs: number = 5 * 60 * 1000): number {
-    const cutoff = Date.now() - thresholdMs;
-    const stmt = this.db.prepare(`
-      UPDATE pending_messages
-      SET status = 'pending', started_processing_at_epoch = NULL
-      WHERE status = 'processing' AND started_processing_at_epoch < ?
-    `);
-    const result = stmt.run(cutoff);
-    if (result.changes > 0) {
-      logger.info('QUEUE', `RESET_STALE | count=${result.changes} | thresholdMs=${thresholdMs}`);
+  resetStaleProcessingMessages(thresholdMs: number = 5 * 60 * 1000, crashRecovery: boolean = false): { reset: number; failed: number } {
+    const now = Date.now();
+    const cutoff = now - thresholdMs;
+
+    const tx = this.db.transaction(() => {
+      let failChanges = 0;
+
+      if (!crashRecovery) {
+        // Runtime stale check: messages that exceeded maxRetries → mark as permanently failed
+        const failResult = this.db.prepare(`
+          UPDATE pending_messages
+          SET status = 'failed', failed_at_epoch = ?
+          WHERE status = 'processing' AND started_processing_at_epoch < ?
+          AND retry_count >= ?
+        `).run(now, cutoff, this.maxRetries);
+        failChanges = failResult.changes;
+      }
+
+      // Reset remaining stale messages to pending
+      const resetResult = crashRecovery
+        ? this.db.prepare(`
+            UPDATE pending_messages
+            SET status = 'pending', started_processing_at_epoch = NULL, retry_count = 0
+            WHERE status = 'processing' AND started_processing_at_epoch < ?
+          `).run(cutoff)
+        : this.db.prepare(`
+            UPDATE pending_messages
+            SET status = 'pending', started_processing_at_epoch = NULL, retry_count = retry_count + 1
+            WHERE status = 'processing' AND started_processing_at_epoch < ?
+          `).run(cutoff);
+
+      return { reset: resetResult.changes, failed: failChanges };
+    });
+
+    const result = tx();
+    if (result.reset > 0 || result.failed > 0) {
+      logger.info('QUEUE', `RESET_STALE | reset=${result.reset} | failed=${result.failed} | thresholdMs=${thresholdMs} | crashRecovery=${crashRecovery}`);
     }
-    return result.changes;
+    return result;
   }
 
   /**
@@ -195,13 +227,13 @@ export class PendingMessageStore {
   }
 
   /**
-   * Retry a specific message (reset to pending)
+   * Retry a specific message (reset to pending with fresh retry budget)
    * Works for pending (re-queue), processing (reset stuck), and failed messages
    */
   retryMessage(messageId: number): boolean {
     const stmt = this.db.prepare(`
       UPDATE pending_messages
-      SET status = 'pending', started_processing_at_epoch = NULL
+      SET status = 'pending', started_processing_at_epoch = NULL, retry_count = 0
       WHERE id = ? AND status IN ('pending', 'processing', 'failed')
     `);
     const result = stmt.run(messageId);
@@ -270,13 +302,13 @@ export class PendingMessageStore {
   }
 
   /**
-   * Retry all stuck messages at once
+   * Retry all stuck messages at once (manual override, resets retry budget)
    */
   retryAllStuck(thresholdMs: number): number {
     const cutoff = Date.now() - thresholdMs;
     const stmt = this.db.prepare(`
       UPDATE pending_messages
-      SET status = 'pending', started_processing_at_epoch = NULL
+      SET status = 'pending', started_processing_at_epoch = NULL, retry_count = 0
       WHERE status = 'processing' AND started_processing_at_epoch < ?
     `);
     const result = stmt.run(cutoff);

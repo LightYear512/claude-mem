@@ -17,27 +17,28 @@ import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
 
-// Windows: avoid repeated spawn popups when startup fails (issue #921)
-const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
+// Cross-platform spawn throttle: prevents concurrent hooks from spawning multiple daemons.
+// Windows uses longer cooldown to also prevent repeated bun.exe popup windows (issue #921).
+const SPAWN_COOLDOWN_MS = process.platform === 'win32'
+  ? 2 * 60 * 1000   // 2min Windows (popup prevention, issue #921)
+  : 30 * 1000;       // 30s others (crash loop prevention)
 
 function getWorkerSpawnLockPath(): string {
   return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.worker-start-attempted');
 }
 
-function shouldSkipSpawnOnWindows(): boolean {
-  if (process.platform !== 'win32') return false;
+function shouldThrottleSpawn(): boolean {
   const lockPath = getWorkerSpawnLockPath();
   if (!existsSync(lockPath)) return false;
   try {
     const modifiedTimeMs = statSync(lockPath).mtimeMs;
-    return Date.now() - modifiedTimeMs < WINDOWS_SPAWN_COOLDOWN_MS;
+    return Date.now() - modifiedTimeMs < SPAWN_COOLDOWN_MS;
   } catch {
     return false;
   }
 }
 
-function markWorkerSpawnAttempted(): void {
-  if (process.platform !== 'win32') return;
+function markSpawnAttempted(): void {
   try {
     writeFileSync(getWorkerSpawnLockPath(), '', 'utf-8');
   } catch {
@@ -45,8 +46,7 @@ function markWorkerSpawnAttempted(): void {
   }
 }
 
-function clearWorkerSpawnAttempted(): void {
-  if (process.platform !== 'win32') return;
+function clearSpawnThrottle(): void {
   try {
     const lockPath = getWorkerSpawnLockPath();
     if (existsSync(lockPath)) unlinkSync(lockPath);
@@ -380,18 +380,19 @@ export class WorkerService {
 
       await this.dbManager.initialize();
 
+      // Reset any messages that were processing when worker died
+      // MUST happen before dbReadyFlag so no new claims race with the reset
+      const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
+      const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
+      const { reset: resetCount, failed: failedCount } = pendingStore.resetStaleProcessingMessages(0, true); // 0 = reset ALL processing, crashRecovery = true
+      if (resetCount > 0 || failedCount > 0) {
+        logger.info('SYSTEM', `Reset ${resetCount} stale processing messages to pending, ${failedCount} permanently failed`);
+      }
+
       // Mark DB as ready — unblocks guard middleware and /stream route
       this.dbReadyFlag = true;
       this.resolveDbReady();
       logger.info('SYSTEM', 'Database initialized (DB-ready stage complete)');
-
-      // Reset any messages that were processing when worker died
-      const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
-      const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-      const resetCount = pendingStore.resetStaleProcessingMessages(0); // 0 = reset ALL processing
-      if (resetCount > 0) {
-        logger.info('SYSTEM', `Reset ${resetCount} stale processing messages to pending`);
-      }
 
       // Initialize search services
       const formattingService = new FormattingService();
@@ -883,15 +884,15 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
     return false;
   }
 
-  // Windows: skip spawn if a recent attempt already failed (prevents repeated bun.exe popups, issue #921)
-  if (shouldSkipSpawnOnWindows()) {
-    logger.warn('SYSTEM', 'Worker unavailable on Windows — skipping spawn (recent attempt failed within cooldown)');
+  // Skip spawn if a recent attempt is within cooldown (prevents concurrent hooks from spawning multiple daemons)
+  if (shouldThrottleSpawn()) {
+    logger.warn('SYSTEM', 'Worker spawn throttled — recent attempt within cooldown, skipping');
     return false;
   }
 
   // Spawn new worker daemon
   logger.info('SYSTEM', 'Starting worker daemon');
-  markWorkerSpawnAttempted();
+  markSpawnAttempted();
   const pid = spawnDaemon(__filename, port);
   if (pid === undefined) {
     logger.error('SYSTEM', 'Failed to spawn worker daemon');
@@ -908,7 +909,9 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
     return false;
   }
 
-  clearWorkerSpawnAttempted();
+  // Note: spawn lock is intentionally NOT cleared on success.
+  // The cooldown protects against concurrent hooks racing to spawn.
+  // Only explicit stop/restart commands clear the throttle.
   logger.info('SYSTEM', 'Worker started successfully');
   return true;
 }
@@ -941,6 +944,7 @@ async function main() {
     }
 
     case 'stop': {
+      clearSpawnThrottle();
       await httpShutdown(port);
       const freed = await waitForPortFree(port, getPlatformTimeout(15000));
       if (!freed) {
@@ -954,6 +958,7 @@ async function main() {
 
     case 'restart': {
       logger.info('SYSTEM', 'Restarting worker');
+      clearSpawnThrottle();
       await httpShutdown(port);
       const freed = await waitForPortFree(port, getPlatformTimeout(15000));
       if (!freed) {
