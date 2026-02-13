@@ -1114,5 +1114,25 @@ const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefi
   : import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('worker-service');
 
 if (isMainModule) {
+  // Prevent silent crashes from unhandled errors in async code or native addons.
+  // In Bun, an unhandledRejection with no listener kills the process with no output.
+  // These handlers ensure we get diagnostic logs before exit.
+  process.on('unhandledRejection', (reason) => {
+    try {
+      logger.error('SYSTEM', 'Unhandled promise rejection', {}, reason instanceof Error ? reason : new Error(String(reason)));
+    } catch {
+      console.error('[worker-service] Unhandled rejection:', reason);
+    }
+  });
+  process.on('uncaughtException', (err) => {
+    try {
+      logger.error('SYSTEM', 'Uncaught exception', {}, err);
+    } catch {
+      console.error('[worker-service] Uncaught exception:', err);
+    }
+    // uncaughtException leaves process in undefined state; exit after logging
+    process.exit(1);
+  });
+
   main();
 }

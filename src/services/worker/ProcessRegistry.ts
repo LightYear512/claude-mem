@@ -290,6 +290,30 @@ export function createPidCapturingSpawn(sessionDbId: number) {
       windowsHide: true
     });
 
+    // Prevent unhandled 'error' events on child process from crashing the worker.
+    // In Node.js/Bun, an EventEmitter that emits 'error' without a listener kills the process.
+    // This handler must be registered SYNCHRONOUSLY before returning the child to the SDK,
+    // because spawn errors can fire on the next tick (before the SDK adds its own handlers).
+    child.on('error', (err) => {
+      logger.error('PROCESS', 'Claude subprocess error', {
+        pid: child.pid,
+        sessionDbId,
+        error: err.message
+      }, err);
+    });
+
+    // Prevent unhandled 'error' events on stdin pipe from crashing the worker.
+    // When the subprocess dies and the SDK writes to stdin, an EPIPE error is emitted.
+    if (child.stdin) {
+      child.stdin.on('error', (err) => {
+        logger.warn('PROCESS', 'Claude subprocess stdin error (subprocess likely dead)', {
+          pid: child.pid,
+          sessionDbId,
+          error: err.message
+        });
+      });
+    }
+
     // Register PID
     if (child.pid) {
       registerProcess(child.pid, sessionDbId, child);
