@@ -57,8 +57,13 @@ export async function processAgentResponse(
   projectRoot?: string
 ): Promise<void> {
   // Add assistant response to shared conversation history for provider interop
+  // Sanitize observation/summary XML to prevent echo amplification in stateless agents:
+  // Models (especially qwen-plus) see raw XML in history and mimic it, producing duplicate observations.
   if (text) {
-    session.conversationHistory.push({ role: 'assistant', content: text });
+    const sanitized = text
+      .replace(/<observation>[\s\S]*?<\/observation>/g, '[observation recorded]')
+      .replace(/<summary>[\s\S]*?<\/summary>/g, '[summary recorded]');
+    session.conversationHistory.push({ role: 'assistant', content: sanitized });
   }
 
   // Parse observations and summary

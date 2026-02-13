@@ -95,7 +95,18 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
     });
   }
 
-  return observations;
+  // Dedup within same batch by fingerprint (defense against model echo amplification)
+  const seen = new Set<string>();
+  const deduped = observations.filter(obs => {
+    const fp = `${obs.type}|${obs.title}|${obs.narrative}`;
+    if (seen.has(fp)) return false;
+    seen.add(fp);
+    return true;
+  });
+  if (deduped.length < observations.length) {
+    logger.warn('PARSER', `Deduplicated ${observations.length - deduped.length} duplicate observations in same batch`, { correlationId });
+  }
+  return deduped;
 }
 
 /**

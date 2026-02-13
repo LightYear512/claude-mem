@@ -165,9 +165,6 @@ export class GeminiAgent {
       const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, apiUrl, model, rateLimitingEnabled, session.sessionDbId);
 
       if (initResponse.content) {
-        // Add response to conversation history
-        session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
-
         // Track token usage
         const tokensUsed = initResponse.tokensUsed || 0;
         session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);  // Rough estimate
@@ -236,9 +233,6 @@ export class GeminiAgent {
 
           let tokensUsed = 0;
           if (obsResponse.content) {
-            // Add response to conversation history
-            session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
-
             tokensUsed = obsResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
@@ -278,9 +272,6 @@ export class GeminiAgent {
 
           let tokensUsed = 0;
           if (summaryResponse.content) {
-            // Add response to conversation history
-            session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
-
             tokensUsed = summaryResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);

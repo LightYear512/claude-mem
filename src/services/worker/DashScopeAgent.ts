@@ -123,9 +123,6 @@ export class DashScopeAgent {
       const initResponse = await this.queryDashScopeMultiTurn(session.conversationHistory, apiKey, model, session.sessionDbId);
 
       if (initResponse.content) {
-        // Add response to conversation history
-        session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
-
         // Track token usage
         const tokensUsed = initResponse.tokensUsed || 0;
         session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
@@ -207,8 +204,6 @@ export class DashScopeAgent {
 
           let tokensUsed = 0;
           if (obsResponse.content) {
-            session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
-
             tokensUsed = obsResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
@@ -253,8 +248,6 @@ export class DashScopeAgent {
 
           let tokensUsed = 0;
           if (summaryResponse.content) {
-            session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
-
             tokensUsed = summaryResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
