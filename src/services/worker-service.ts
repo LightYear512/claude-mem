@@ -10,7 +10,7 @@
  */
 
 import path from 'path';
-import { existsSync, writeFileSync, unlinkSync, statSync } from 'fs';
+import { writeFileSync, unlinkSync, statSync } from 'fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
@@ -28,12 +28,11 @@ function getWorkerSpawnLockPath(): string {
 }
 
 function shouldThrottleSpawn(): boolean {
-  const lockPath = getWorkerSpawnLockPath();
-  if (!existsSync(lockPath)) return false;
   try {
-    const modifiedTimeMs = statSync(lockPath).mtimeMs;
+    const modifiedTimeMs = statSync(getWorkerSpawnLockPath()).mtimeMs;
     return Date.now() - modifiedTimeMs < SPAWN_COOLDOWN_MS;
   } catch {
+    // File doesn't exist or is inaccessible — no throttle needed
     return false;
   }
 }
@@ -48,10 +47,9 @@ function markSpawnAttempted(): void {
 
 function clearSpawnThrottle(): void {
   try {
-    const lockPath = getWorkerSpawnLockPath();
-    if (existsSync(lockPath)) unlinkSync(lockPath);
+    unlinkSync(getWorkerSpawnLockPath());
   } catch {
-    // Best-effort cleanup
+    // Best-effort cleanup — file may not exist
   }
 }
 
@@ -177,17 +175,22 @@ export class WorkerService {
   // 2. initializationCompleteFlag: set when MCP connection completes (full readiness)
   private dbReady: Promise<void>;
   private resolveDbReady!: () => void;
+  private rejectDbReady!: (error: unknown) => void;
 
   // Orphan reaper cleanup function (Issue #737)
   private stopOrphanReaper: (() => void) | null = null;
+
+  // Vector backfill promise for tracking during shutdown
+  private backfillPromise: Promise<void> | null = null;
 
   // Prevent concurrent fallback execution for the same session
   private fallbackInProgress = new Set<number>();
 
   constructor() {
     // DB-ready promise: resolves when database is initialized (unblocks guard middleware)
-    this.dbReady = new Promise((resolve) => {
+    this.dbReady = new Promise((resolve, reject) => {
       this.resolveDbReady = resolve;
+      this.rejectDbReady = reject;
     });
 
     // Initialize service layer
@@ -441,10 +444,18 @@ export class WorkerService {
       this.initializationCompleteFlag = true;
       logger.info('SYSTEM', 'Background initialization complete');
 
-      // Backfill vector database (fire-and-forget, non-blocking)
+      // Backfill vector database (non-blocking, tracked for shutdown)
       // Re-indexes any observations missing from ChromaDB (e.g., after vector DB reset)
-      this.dbManager.getChromaSync().ensureBackfilled().catch((error) => {
+      const BACKFILL_TIMEOUT_MS = 300_000; // 5 minutes
+      this.backfillPromise = Promise.race([
+        this.dbManager.getChromaSync().ensureBackfilled(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Vector backfill timeout')), BACKFILL_TIMEOUT_MS)
+        )
+      ]).catch((error) => {
         logger.warn('CHROMA', 'Vector backfill failed (non-fatal)', {}, error as Error);
+      }).finally(() => {
+        this.backfillPromise = null;
       });
 
       // Start orphan reaper to clean up zombie processes (Issue #737)
@@ -471,6 +482,10 @@ export class WorkerService {
       });
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
+      // Reject dbReady so waiting requests fail instead of hanging forever
+      if (!this.dbReadyFlag) {
+        this.rejectDbReady(error);
+      }
       throw error;
     }
   }
@@ -819,6 +834,14 @@ export class WorkerService {
     if (this.stopOrphanReaper) {
       this.stopOrphanReaper();
       this.stopOrphanReaper = null;
+    }
+
+    // Wait for vector backfill to complete (with a short grace period)
+    if (this.backfillPromise) {
+      await Promise.race([
+        this.backfillPromise,
+        new Promise<void>((resolve) => setTimeout(resolve, 5000))
+      ]);
     }
 
     await performGracefulShutdown({

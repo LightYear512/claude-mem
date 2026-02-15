@@ -5,6 +5,7 @@
 
 import { Database } from 'bun:sqlite';
 import type { StoredAIAnalysis, AIAnalysisSearchResult } from './types.js';
+import { logger } from '../../../utils/logger.js';
 
 /**
  * Get AI analysis by ID
@@ -128,6 +129,16 @@ export function searchAIAnalyses(
   return rows.map(formatAIAnalysisResult);
 }
 
+function safeParseJsonArray(value: string | null, field: string, rowId: number): unknown[] {
+  if (!value) return [];
+  try {
+    return JSON.parse(value);
+  } catch {
+    logger.warn('AI_ANALYSIS', `Invalid JSON in ${field}`, { id: rowId });
+    return [];
+  }
+}
+
 /**
  * Format stored AI analysis to search result
  */
@@ -137,8 +148,8 @@ function formatAIAnalysisResult(row: StoredAIAnalysis): AIAnalysisSearchResult {
     memorySessionId: row.memory_session_id,
     project: row.project,
     analysisText: row.analysis_text,
-    keyInsights: row.key_insights ? JSON.parse(row.key_insights) : [],
-    connections: row.connections ? JSON.parse(row.connections) : [],
+    keyInsights: safeParseJsonArray(row.key_insights, 'key_insights', row.id),
+    connections: safeParseJsonArray(row.connections, 'connections', row.id),
     createdAt: row.created_at,
     createdAtEpoch: row.created_at_epoch,
     discoveryTokens: row.discovery_tokens

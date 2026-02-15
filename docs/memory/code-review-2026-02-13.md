@@ -58,23 +58,23 @@
 | H8 | `SettingsRoutes.ts` + `GeminiAgent.ts` | GEMINI_API_URL 无验证 + SSRF | ✅ 已修复：URL 格式验证 + test-connection 端点加 requireLocalhost |
 | H9 | `ProcessRegistry.ts:340-363` | subprocess stderr 日志可能含敏感信息 | ⚠️ 由 C1 修复缓解（logger 统一脱敏），完整修复待定 |
 
-### MEDIUM (13) — 3 项已修复，10 项待修复
+### MEDIUM (13) — 11 项已修复，2 项待修复
 
 | ID | 文件 | 描述 | 状态 |
 |----|------|------|------|
 | M1 | `GeminiAgent.ts` / `OpenRouterAgent.ts` | fetch() 缺少 AbortSignal | ✅ 已修复 |
 | M2 | `BudgetController.ts` | rollback 可使 spent_*_micros 变负 | ✅ 已修复 |
-| M3 | `BudgetController.ts:237-249` | commit() 成本调整不增加 version，破坏乐观锁不变量 | 待修复 |
+| M3 | `BudgetController.ts:237-249` | commit() 成本调整不增加 version，破坏乐观锁不变量 | ✅ 已修复：UPDATE 添加 version = version + 1 和 last_update_epoch |
 | M4 | `logger.ts:18` | Component 类型缺少 PROCESS/QUEUE/CONSOLE | ✅ 已修复 |
-| M5 | `ai-analysis/get.ts:140-141` | JSON.parse 无 try/catch，损坏数据崩溃检索路径 | 待修复 |
-| M6 | `SettingsRoutes.ts:144-149` | GET /api/settings 返回明文 API key | 待修复 |
-| M7 | `SettingsRoutes.ts:237` | CLAUDE_MEM_EMBEDDING_FUNCTION 无验证 | 待修复 |
-| M8 | `SessionRoutes.ts:29-30,338` | spawnInProgress/crashRecoveryScheduled 在 session 删除时未清理 | 待修复 |
+| M5 | `ai-analysis/get.ts:140-141` | JSON.parse 无 try/catch，损坏数据崩溃检索路径 | ✅ 已修复：safeParseJsonArray 包裹 try/catch，损坏数据返回空数组 |
+| M6 | `SettingsRoutes.ts:144-149` | GET /api/settings 返回明文 API key | ✅ 已修复：返回前将 API key 替换为 '••••••••'（保留空/非空区分） |
+| M7 | `SettingsRoutes.ts:237` | CLAUDE_MEM_EMBEDDING_FUNCTION 无验证 | ✅ 已修复：在 validateSettings() 中校验值是否在 VALID_EMBEDDING_MODELS 列表中 |
+| M8 | `SessionRoutes.ts:29-30,338` | spawnInProgress/crashRecoveryScheduled 在 session 删除时未清理 | ✅ 已修复：添加 cleanupSessionState() 在 delete/complete 时清理 |
 | M9 | `SessionManager.ts:296-311` | resetProcessingToPending 与生成器清理可能竞态 | 待修复 |
-| M10 | `worker-service.ts:30-47` | spawn throttle lock file TOCTOU 竞态 | 待修复 |
-| M11 | `worker-service.ts:444-448` | fire-and-forget vector backfill promise | 待修复 |
+| M10 | `worker-service.ts:30-47` | spawn throttle lock file TOCTOU 竞态 | ✅ 已修复：合并为单个 statSync + catch，消除 existsSync check-then-use 间隙 |
+| M11 | `worker-service.ts:444-448` | fire-and-forget vector backfill promise | ✅ 已修复：保留 promise 引用 + 5 分钟超时 + shutdown 时等待完成 |
 | M12 | `mcp-server.ts:354-365` | Windows detached spawn 孤儿进程风险 | 待修复 |
-| M13 | `worker-service.ts:164-172,384` | dbReady promise 初始化失败时永不 resolve | 待修复 |
+| M13 | `worker-service.ts:164-172,384` | dbReady promise 初始化失败时永不 resolve | ✅ 已修复：添加 rejectDbReady，初始化失败时 reject 使等待请求返回 503 |
 
 ### LOW (5)
 - SDKAgent catch-and-rethrow 是 no-op（可简化为 try/finally）
@@ -96,10 +96,16 @@ C1（方案 B：输出路径脱敏）, H3, M1, H4
 ### ✅ 第三批（设计决策） — 已完成
 C2（纯 IP 检查 + RFC 1918）, H7/H8（URL 验证 + requireLocalhost）, H6（中间 budget 检查）
 
+### ✅ 第四批（快速修复） — 已完成
+M5（JSON.parse try/catch）, M8（session 状态清理）, M10（TOCTOU 消除）, M13（dbReady reject）
+
+### ✅ 第五批（中等复杂度） — 已完成
+M3（乐观锁版本递增）, M6（API key 脱敏）, M7（embedding 模型验证）, M11（backfill promise 跟踪+超时）
+
 ### 剩余待修复
 - **H7** (CLAUDE_CODE_PATH 验证): 由 C2 保护，本地风险低，无可靠验证方案
 - **H9** (stderr 敏感信息): 由 C1 logger 脱敏缓解
-- **M3-M13**: 10 项 MEDIUM / 5 项 LOW 待处理
+- **M9, M12**: 2 项 MEDIUM（需更多设计考量）/ 5 项 LOW 待处理
 
 ---
 

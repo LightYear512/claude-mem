@@ -535,6 +535,7 @@ export class SessionRoutes extends BaseRouteHandler {
     if (sessionDbId === null) return;
 
     await this.completionHandler.completeByDbId(sessionDbId);
+    this.cleanupSessionState(sessionDbId);
 
     res.json({ status: 'deleted' });
   });
@@ -548,9 +549,18 @@ export class SessionRoutes extends BaseRouteHandler {
     if (sessionDbId === null) return;
 
     await this.completionHandler.completeByDbId(sessionDbId);
+    this.cleanupSessionState(sessionDbId);
 
     res.json({ success: true });
   });
+
+  /**
+   * Clean up in-memory state for a completed/deleted session
+   */
+  private cleanupSessionState(sessionDbId: number): void {
+    this.spawnInProgress.delete(sessionDbId);
+    this.crashRecoveryScheduled.delete(sessionDbId);
+  }
 
   /**
    * Queue observations by contentSessionId (post-tool-use-hook uses this)
@@ -726,6 +736,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // Complete the session (removes from active sessions map)
     await this.completionHandler.completeByDbId(sessionDbId);
+    this.cleanupSessionState(sessionDbId);
 
     logger.info('SESSION', 'Session completed via API', {
       contentSessionId,

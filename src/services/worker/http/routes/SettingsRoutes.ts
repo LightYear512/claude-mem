@@ -146,7 +146,17 @@ export class SettingsRoutes extends BaseRouteHandler {
     const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
     this.ensureSettingsFile(settingsPath);
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    res.json(settings);
+
+    // Redact sensitive fields — show presence but not value
+    const SENSITIVE_KEYS = ['CLAUDE_MEM_GEMINI_API_KEY', 'CLAUDE_MEM_OPENROUTER_API_KEY', 'CLAUDE_MEM_DASHSCOPE_API_KEY'];
+    const redacted = { ...settings } as Record<string, unknown>;
+    for (const key of SENSITIVE_KEYS) {
+      if (key in redacted) {
+        const val = redacted[key];
+        redacted[key] = typeof val === 'string' && val.length > 0 ? '••••••••' : '';
+      }
+    }
+    res.json(redacted);
   });
 
   /**
@@ -527,6 +537,13 @@ export class SettingsRoutes extends BaseRouteHandler {
       const limit = parseFloat(settings.CLAUDE_MEM_BUDGET_MONTHLY_LIMIT);
       if (isNaN(limit) || limit < 0 || limit > 10000) {
         return { valid: false, error: 'CLAUDE_MEM_BUDGET_MONTHLY_LIMIT must be between 0 and 10000' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_EMBEDDING_FUNCTION
+    if (settings.CLAUDE_MEM_EMBEDDING_FUNCTION) {
+      if (!VALID_EMBEDDING_MODELS.includes(settings.CLAUDE_MEM_EMBEDDING_FUNCTION)) {
+        return { valid: false, error: `CLAUDE_MEM_EMBEDDING_FUNCTION must be one of: ${VALID_EMBEDDING_MODELS.join(', ')}` };
       }
     }
 

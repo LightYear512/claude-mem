@@ -258,9 +258,11 @@ export class BudgetController {
             this.db.prepare(`
               UPDATE budget_state
               SET spent_today_micros = MAX(0, spent_today_micros + ?),
-                  spent_month_micros = MAX(0, spent_month_micros + ?)
+                  spent_month_micros = MAX(0, spent_month_micros + ?),
+                  version = version + 1,
+                  last_update_epoch = ?
               WHERE id = 1
-            `).run(todayDiff, monthDiff);
+            `).run(todayDiff, monthDiff, Date.now());
           }
         }
       }
