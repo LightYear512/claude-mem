@@ -142,4 +142,8 @@ export const UNRECOVERABLE_ERROR_PATTERNS = [
   'CLAUDE_CODE_PATH',
   'spawn ENOENT',
   'spawn EACCES',
+  'uv_spawn',           // Windows ENOENT format: "ENOENT: ... uv_spawn 'path'"
+  'ProcessTransport',   // SDK transport failure when subprocess is dead
+  'no API key configured', // Provider selected but API key missing (DashScope, OpenRouter, Gemini)
+  'Budget limit exceeded',  // Budget exhausted — retrying will always fail
 ] as const;

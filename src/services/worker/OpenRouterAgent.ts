@@ -120,7 +120,7 @@ export class OpenRouterAgent {
 
       // Add to conversation history and query OpenRouter with full context
       session.conversationHistory.push({ role: 'user', content: initPrompt });
-      const initResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, session.sessionDbId);
+      const initResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, session.sessionDbId, session.abortController.signal);
 
       if (initResponse.content) {
         // Track token usage
@@ -187,7 +187,7 @@ export class OpenRouterAgent {
 
           // Add to conversation history and query OpenRouter with full context
           session.conversationHistory.push({ role: 'user', content: obsPrompt });
-          const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, session.sessionDbId);
+          const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, session.sessionDbId, session.abortController.signal);
 
           let tokensUsed = 0;
           if (obsResponse.content) {
@@ -226,7 +226,7 @@ export class OpenRouterAgent {
 
           // Add to conversation history and query OpenRouter with full context
           session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-          const summaryResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, session.sessionDbId);
+          const summaryResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, session.sessionDbId, session.abortController.signal);
 
           let tokensUsed = 0;
           if (summaryResponse.content) {
@@ -356,7 +356,8 @@ export class OpenRouterAgent {
     model: string,
     siteUrl?: string,
     appName?: string,
-    sessionDbId?: number
+    sessionDbId?: number,
+    signal?: AbortSignal
   ): Promise<{ content: string; tokensUsed?: number }> {
     // Truncate history to prevent runaway costs
     const truncatedHistory = this.truncateHistory(history);
@@ -402,6 +403,7 @@ export class OpenRouterAgent {
           temperature: 0.3,  // Lower temperature for structured extraction
           max_tokens: 4096,
         }),
+        signal,
       });
 
       if (!response.ok) {

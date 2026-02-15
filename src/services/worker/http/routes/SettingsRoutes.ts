@@ -16,6 +16,7 @@ import { SettingsManager } from '../../SettingsManager.js';
 import { getBranchInfo, switchBranch, pullUpdates } from '../../BranchManager.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { requireLocalhost } from '../middleware.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { testGeminiConnection } from '../../GeminiAgent.js';
@@ -112,27 +113,27 @@ export class SettingsRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
-    // Settings endpoints
+    // Settings endpoints (reads are open, writes require local/private access)
     app.get('/api/settings', this.handleGetSettings.bind(this));
-    app.post('/api/settings', this.handleUpdateSettings.bind(this));
+    app.post('/api/settings', requireLocalhost, this.handleUpdateSettings.bind(this));
 
     // MCP toggle endpoints
     app.get('/api/mcp/status', this.handleGetMcpStatus.bind(this));
-    app.post('/api/mcp/toggle', this.handleToggleMcp.bind(this));
+    app.post('/api/mcp/toggle', requireLocalhost, this.handleToggleMcp.bind(this));
 
     // Branch switching endpoints
     app.get('/api/branch/status', this.handleGetBranchStatus.bind(this));
-    app.post('/api/branch/switch', this.handleSwitchBranch.bind(this));
-    app.post('/api/branch/update', this.handleUpdateBranch.bind(this));
+    app.post('/api/branch/switch', requireLocalhost, this.handleSwitchBranch.bind(this));
+    app.post('/api/branch/update', requireLocalhost, this.handleUpdateBranch.bind(this));
 
-    // Connection test endpoint
-    app.post('/api/settings/test-connection', this.handleTestConnection.bind(this));
+    // Connection test endpoint (makes outbound HTTP requests — restrict to prevent SSRF)
+    app.post('/api/settings/test-connection', requireLocalhost, this.handleTestConnection.bind(this));
 
     // Vector database reset endpoint
-    app.post('/api/settings/reset-vectors', this.handleResetVectors.bind(this));
+    app.post('/api/settings/reset-vectors', requireLocalhost, this.handleResetVectors.bind(this));
 
     // Embedding model test endpoint
-    app.post('/api/settings/test-embedding', this.handleTestEmbedding.bind(this));
+    app.post('/api/settings/test-embedding', requireLocalhost, this.handleTestEmbedding.bind(this));
 
     // Embedding model metadata endpoint
     app.get('/api/settings/embedding-models', this.handleGetEmbeddingModels.bind(this));
@@ -476,6 +477,18 @@ export class SettingsRoutes extends BaseRouteHandler {
       const tokens = parseInt(settings.CLAUDE_MEM_DASHSCOPE_MAX_TOKENS, 10);
       if (isNaN(tokens) || tokens < 1000 || tokens > 1000000) {
         return { valid: false, error: 'CLAUDE_MEM_DASHSCOPE_MAX_TOKENS must be between 1000 and 1000000' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_GEMINI_API_URL if provided
+    if (settings.CLAUDE_MEM_GEMINI_API_URL) {
+      try {
+        const parsed = new URL(settings.CLAUDE_MEM_GEMINI_API_URL);
+        if (!['http:', 'https:'].includes(parsed.protocol)) {
+          return { valid: false, error: 'CLAUDE_MEM_GEMINI_API_URL must use http or https protocol' };
+        }
+      } catch (error) {
+        return { valid: false, error: 'CLAUDE_MEM_GEMINI_API_URL must be a valid URL' };
       }
     }
 

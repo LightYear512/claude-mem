@@ -120,7 +120,7 @@ export class DashScopeAgent {
 
       // Add to conversation history and query DashScope with full context
       session.conversationHistory.push({ role: 'user', content: initPrompt });
-      const initResponse = await this.queryDashScopeMultiTurn(session.conversationHistory, apiKey, model, session.sessionDbId);
+      const initResponse = await this.queryDashScopeMultiTurn(session.conversationHistory, apiKey, model, session.sessionDbId, session.abortController.signal);
 
       if (initResponse.content) {
         // Track token usage
@@ -200,7 +200,7 @@ export class DashScopeAgent {
 
           // Add to conversation history and query DashScope with full context
           session.conversationHistory.push({ role: 'user', content: obsPrompt });
-          const obsResponse = await this.queryDashScopeMultiTurn(session.conversationHistory, apiKey, model, session.sessionDbId);
+          const obsResponse = await this.queryDashScopeMultiTurn(session.conversationHistory, apiKey, model, session.sessionDbId, session.abortController.signal);
 
           let tokensUsed = 0;
           if (obsResponse.content) {
@@ -244,7 +244,7 @@ export class DashScopeAgent {
 
           // Add to conversation history and query DashScope with full context
           session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-          const summaryResponse = await this.queryDashScopeMultiTurn(session.conversationHistory, apiKey, model, session.sessionDbId);
+          const summaryResponse = await this.queryDashScopeMultiTurn(session.conversationHistory, apiKey, model, session.sessionDbId, session.abortController.signal);
 
           let tokensUsed = 0;
           if (summaryResponse.content) {
@@ -368,7 +368,8 @@ export class DashScopeAgent {
     history: ConversationMessage[],
     apiKey: string,
     model: string,
-    sessionDbId?: number
+    sessionDbId?: number,
+    signal?: AbortSignal
   ): Promise<{ content: string; tokensUsed?: number }> {
     // Truncate history to prevent runaway costs
     const truncatedHistory = this.truncateHistory(history);
@@ -418,6 +419,7 @@ export class DashScopeAgent {
           temperature: 0.3,
           max_tokens: 4096,
         }),
+        signal, // Abort in-flight requests when session is cancelled
       });
 
       if (!response.ok) {

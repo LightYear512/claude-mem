@@ -240,12 +240,28 @@ export class BudgetController {
         const diff = actualMicros - tx.cost_micros;
 
         if (diff !== 0) {
-          this.db.prepare(`
-            UPDATE budget_state
-            SET spent_today_micros = spent_today_micros + ?,
-                spent_month_micros = spent_month_micros + ?
-            WHERE id = 1
-          `).run(diff, diff);
+          // Date alignment check: only adjust periods where the transaction's date
+          // matches the current budget period. After a date/month reset, the reserved
+          // amount from a previous period is no longer reflected in spent_*_micros.
+          const state = this.db.prepare(`
+            SELECT budget_date, budget_month FROM budget_state WHERE id = 1
+          `).get() as { budget_date: string; budget_month: string };
+
+          const txDate = new Date(tx.created_at_epoch);
+          const txDateStr = `${txDate.getFullYear()}-${String(txDate.getMonth() + 1).padStart(2, '0')}-${String(txDate.getDate()).padStart(2, '0')}`;
+          const txMonthStr = txDateStr.substring(0, 7);
+
+          const todayDiff = txDateStr === state.budget_date ? diff : 0;
+          const monthDiff = txMonthStr === state.budget_month ? diff : 0;
+
+          if (todayDiff !== 0 || monthDiff !== 0) {
+            this.db.prepare(`
+              UPDATE budget_state
+              SET spent_today_micros = MAX(0, spent_today_micros + ?),
+                  spent_month_micros = MAX(0, spent_month_micros + ?)
+              WHERE id = 1
+            `).run(todayDiff, monthDiff);
+          }
         }
       }
 
@@ -326,8 +342,8 @@ export class BudgetController {
       if (todayAdjust > 0 || monthAdjust > 0) {
         this.db.prepare(`
           UPDATE budget_state
-          SET spent_today_micros = spent_today_micros - ?,
-              spent_month_micros = spent_month_micros - ?
+          SET spent_today_micros = MAX(0, spent_today_micros - ?),
+              spent_month_micros = MAX(0, spent_month_micros - ?)
           WHERE id = 1
         `).run(todayAdjust, monthAdjust);
       }
@@ -534,19 +550,10 @@ export class BudgetController {
     const presetId = settings.CLAUDE_MEM_BUDGET_PRESET || 'claude-haiku';
     const preset = getPresetById(presetId) ?? getDefaultPreset();
 
-    // Handle custom pricing
-    let billingType = preset.billingType;
-    if (presetId === 'custom') {
-      const customPricing = parseCustomPricing(settings.CLAUDE_MEM_BUDGET_CUSTOM_PRICING);
-      if (!customPricing) {
-        logger.warn('BUDGET', 'Custom pricing invalid, falling back to token billing');
-      }
-    }
-
     return {
       enabled: settings.CLAUDE_MEM_BUDGET_ENABLED === 'true',
       preset: presetId,
-      billingType,
+      billingType: preset.billingType,
       dailyLimitMicros: Math.round(parseFloat(settings.CLAUDE_MEM_BUDGET_DAILY_LIMIT || '1.00') * 1_000_000),
       monthlyLimitMicros: Math.round(parseFloat(settings.CLAUDE_MEM_BUDGET_MONTHLY_LIMIT || '20.00') * 1_000_000),
     };
@@ -599,10 +606,27 @@ export class BudgetController {
 
   /**
    * Get pricing preset for current configuration.
+   * For 'custom' preset, overrides pricing with user-configured values.
    */
   getCurrentPreset(): PricingPreset {
     const config = this.getConfig();
-    return getPresetById(config.preset) ?? getDefaultPreset();
+    const preset = getPresetById(config.preset) ?? getDefaultPreset();
+
+    if (config.preset === 'custom') {
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+      const customPricing = parseCustomPricing(settings.CLAUDE_MEM_BUDGET_CUSTOM_PRICING);
+      if (customPricing) {
+        return {
+          ...preset,
+          input: customPricing.input,
+          output: customPricing.output,
+          cacheCreation: customPricing.cacheCreation,
+          cacheRead: customPricing.cacheRead,
+        };
+      }
+    }
+
+    return preset;
   }
 
   /**

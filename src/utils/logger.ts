@@ -15,7 +15,7 @@ export enum LogLevel {
   SILENT = 4
 }
 
-export type Component = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA' | 'FOLDER_INDEX' | 'BUDGET' | 'SETTINGS' | 'CLAUDE_MD';
+export type Component = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA' | 'FOLDER_INDEX' | 'BUDGET' | 'SETTINGS' | 'CLAUDE_MD' | 'PROCESS' | 'QUEUE' | 'CONSOLE';
 
 interface LogContext {
   sessionId?: number;
@@ -27,6 +27,14 @@ interface LogContext {
 // NOTE: This default must match DEFAULT_DATA_DIR in src/shared/SettingsDefaultsManager.ts
 // Inlined here to avoid circular dependency with SettingsDefaultsManager
 const DEFAULT_DATA_DIR = join(homedir(), '.claude-mem');
+
+/**
+ * Redact sensitive query parameters from URLs in a string.
+ * Replaces values of key/token/secret params with '***'.
+ */
+export function redactUrlSecrets(str: string): string {
+  return str.replace(/([\?&](?:key|token|api[_-]?key|apikey|secret|password|access[_-]?token)=)[^&\s"']+/gi, '$1***');
+}
 
 export class Logger {
   private level: LogLevel | null = null;
@@ -283,7 +291,9 @@ export class Logger {
       }
     }
 
-    const logLine = `[${timestamp}] [${levelStr}] [${componentStr}] ${correlationStr}${message}${contextStr}${dataStr}`;
+    const rawLine = `[${timestamp}] [${levelStr}] [${componentStr}] ${correlationStr}${message}${contextStr}${dataStr}`;
+    // Redact sensitive URL query parameters (e.g., ?key=...) to prevent API key leakage in logs
+    const logLine = redactUrlSecrets(rawLine);
 
     // Output to log file ONLY (worker runs in background, console is useless)
     if (this.logFilePath) {

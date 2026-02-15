@@ -162,7 +162,7 @@ export class GeminiAgent {
 
       // Add to conversation history and query Gemini with full context
       session.conversationHistory.push({ role: 'user', content: initPrompt });
-      const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, apiUrl, model, rateLimitingEnabled, session.sessionDbId);
+      const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, apiUrl, model, rateLimitingEnabled, session.sessionDbId, session.abortController.signal);
 
       if (initResponse.content) {
         // Track token usage
@@ -229,7 +229,7 @@ export class GeminiAgent {
 
           // Add to conversation history and query Gemini with full context
           session.conversationHistory.push({ role: 'user', content: obsPrompt });
-          const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, apiUrl, model, rateLimitingEnabled, session.sessionDbId);
+          const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, apiUrl, model, rateLimitingEnabled, session.sessionDbId, session.abortController.signal);
 
           let tokensUsed = 0;
           if (obsResponse.content) {
@@ -268,7 +268,7 @@ export class GeminiAgent {
 
           // Add to conversation history and query Gemini with full context
           session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-          const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, apiUrl, model, rateLimitingEnabled, session.sessionDbId);
+          const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, apiUrl, model, rateLimitingEnabled, session.sessionDbId, session.abortController.signal);
 
           let tokensUsed = 0;
           if (summaryResponse.content) {
@@ -346,7 +346,8 @@ export class GeminiAgent {
     apiUrl: string,
     model: GeminiModel,
     rateLimitingEnabled: boolean,
-    sessionDbId?: number
+    sessionDbId?: number,
+    signal?: AbortSignal
   ): Promise<{ content: string; tokensUsed?: number }> {
     const contents = this.conversationToGeminiContents(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
@@ -396,6 +397,7 @@ export class GeminiAgent {
             maxOutputTokens: 4096,
           },
         }),
+        signal,
       });
 
       if (!response.ok) {

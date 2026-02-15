@@ -521,71 +521,76 @@ export class SessionStore {
     // Begin transaction
     this.db.run('BEGIN TRANSACTION');
 
-    // Create AI analysis table
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS ai_analysis (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        memory_session_id TEXT NOT NULL,
-        project TEXT NOT NULL,
-        analysis_text TEXT NOT NULL,
-        key_insights TEXT,
-        connections TEXT,
-        created_at TEXT NOT NULL,
-        created_at_epoch INTEGER NOT NULL,
-        discovery_tokens INTEGER DEFAULT 0,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
-      );
+    try {
+      // Create AI analysis table
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS ai_analysis (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          memory_session_id TEXT NOT NULL,
+          project TEXT NOT NULL,
+          analysis_text TEXT NOT NULL,
+          key_insights TEXT,
+          connections TEXT,
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          discovery_tokens INTEGER DEFAULT 0,
+          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
+        );
 
-      CREATE INDEX IF NOT EXISTS idx_ai_analysis_session ON ai_analysis(memory_session_id);
-      CREATE INDEX IF NOT EXISTS idx_ai_analysis_project ON ai_analysis(project);
-      CREATE INDEX IF NOT EXISTS idx_ai_analysis_created ON ai_analysis(created_at_epoch DESC);
-    `);
+        CREATE INDEX IF NOT EXISTS idx_ai_analysis_session ON ai_analysis(memory_session_id);
+        CREATE INDEX IF NOT EXISTS idx_ai_analysis_project ON ai_analysis(project);
+        CREATE INDEX IF NOT EXISTS idx_ai_analysis_created ON ai_analysis(created_at_epoch DESC);
+      `);
 
-    // Add ai_analysis_id foreign key to observations table
-    const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-    const hasAIAnalysisId = observationsInfo.some(col => col.name === 'ai_analysis_id');
+      // Add ai_analysis_id foreign key to observations table
+      const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+      const hasAIAnalysisId = observationsInfo.some(col => col.name === 'ai_analysis_id');
 
-    if (!hasAIAnalysisId) {
-      this.db.run(`ALTER TABLE observations ADD COLUMN ai_analysis_id INTEGER REFERENCES ai_analysis(id) ON DELETE SET NULL`);
-      this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_ai_analysis ON observations(ai_analysis_id)`);
+      if (!hasAIAnalysisId) {
+        this.db.run(`ALTER TABLE observations ADD COLUMN ai_analysis_id INTEGER REFERENCES ai_analysis(id) ON DELETE SET NULL`);
+        this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_ai_analysis ON observations(ai_analysis_id)`);
+      }
+
+      // Create FTS5 virtual table for ai_analysis
+      this.db.run(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS ai_analysis_fts USING fts5(
+          analysis_text,
+          key_insights,
+          connections,
+          content='ai_analysis',
+          content_rowid='id'
+        );
+      `);
+
+      // Triggers to keep ai_analysis_fts in sync
+      this.db.run(`
+        CREATE TRIGGER IF NOT EXISTS ai_analysis_ai AFTER INSERT ON ai_analysis BEGIN
+          INSERT INTO ai_analysis_fts(rowid, analysis_text, key_insights, connections)
+          VALUES (new.id, new.analysis_text, new.key_insights, new.connections);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS ai_analysis_ad AFTER DELETE ON ai_analysis BEGIN
+          INSERT INTO ai_analysis_fts(ai_analysis_fts, rowid, analysis_text, key_insights, connections)
+          VALUES('delete', old.id, old.analysis_text, old.key_insights, old.connections);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS ai_analysis_au AFTER UPDATE ON ai_analysis BEGIN
+          INSERT INTO ai_analysis_fts(ai_analysis_fts, rowid, analysis_text, key_insights, connections)
+          VALUES('delete', old.id, old.analysis_text, old.key_insights, old.connections);
+          INSERT INTO ai_analysis_fts(rowid, analysis_text, key_insights, connections)
+          VALUES (new.id, new.analysis_text, new.key_insights, new.connections);
+        END;
+      `);
+
+      // Record migration inside transaction
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(12, new Date().toISOString());
+
+      // Commit transaction
+      this.db.run('COMMIT');
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      throw error;
     }
-
-    // Create FTS5 virtual table for ai_analysis
-    this.db.run(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS ai_analysis_fts USING fts5(
-        analysis_text,
-        key_insights,
-        connections,
-        content='ai_analysis',
-        content_rowid='id'
-      );
-    `);
-
-    // Triggers to keep ai_analysis_fts in sync
-    this.db.run(`
-      CREATE TRIGGER IF NOT EXISTS ai_analysis_ai AFTER INSERT ON ai_analysis BEGIN
-        INSERT INTO ai_analysis_fts(rowid, analysis_text, key_insights, connections)
-        VALUES (new.id, new.analysis_text, new.key_insights, new.connections);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS ai_analysis_ad AFTER DELETE ON ai_analysis BEGIN
-        INSERT INTO ai_analysis_fts(ai_analysis_fts, rowid, analysis_text, key_insights, connections)
-        VALUES('delete', old.id, old.analysis_text, old.key_insights, old.connections);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS ai_analysis_au AFTER UPDATE ON ai_analysis BEGIN
-        INSERT INTO ai_analysis_fts(ai_analysis_fts, rowid, analysis_text, key_insights, connections)
-        VALUES('delete', old.id, old.analysis_text, old.key_insights, old.connections);
-        INSERT INTO ai_analysis_fts(rowid, analysis_text, key_insights, connections)
-        VALUES (new.id, new.analysis_text, new.key_insights, new.connections);
-      END;
-    `);
-
-    // Commit transaction
-    this.db.run('COMMIT');
-
-    // Record migration
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(8, new Date().toISOString());
 
     logger.debug('DB', 'Successfully created ai_analysis table with FTS5 support');
   }
@@ -758,96 +763,101 @@ export class SessionStore {
     // Begin transaction
     this.db.run('BEGIN TRANSACTION');
 
-    // budget_state table - single-row global state with optimistic lock
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS budget_state (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        budget_date TEXT NOT NULL,
-        budget_month TEXT NOT NULL,
-        spent_today_micros INTEGER NOT NULL DEFAULT 0,
-        spent_month_micros INTEGER NOT NULL DEFAULT 0,
-        daily_limit_micros INTEGER NOT NULL DEFAULT 1000000,
-        monthly_limit_micros INTEGER NOT NULL DEFAULT 20000000,
-        version INTEGER NOT NULL DEFAULT 1,
-        last_update_epoch INTEGER NOT NULL,
-        CONSTRAINT spent_today_not_negative CHECK (spent_today_micros >= 0),
-        CONSTRAINT spent_month_not_negative CHECK (spent_month_micros >= 0)
-      )
-    `);
+    try {
+      // budget_state table - single-row global state with optimistic lock
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS budget_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          budget_date TEXT NOT NULL,
+          budget_month TEXT NOT NULL,
+          spent_today_micros INTEGER NOT NULL DEFAULT 0,
+          spent_month_micros INTEGER NOT NULL DEFAULT 0,
+          daily_limit_micros INTEGER NOT NULL DEFAULT 1000000,
+          monthly_limit_micros INTEGER NOT NULL DEFAULT 20000000,
+          version INTEGER NOT NULL DEFAULT 1,
+          last_update_epoch INTEGER NOT NULL,
+          CONSTRAINT spent_today_not_negative CHECK (spent_today_micros >= 0),
+          CONSTRAINT spent_month_not_negative CHECK (spent_month_micros >= 0)
+        )
+      `);
 
-    // budget_transactions table - two-phase commit tracking
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS budget_transactions (
-        id TEXT PRIMARY KEY,
-        phase TEXT NOT NULL CHECK (phase IN ('reserved', 'committed', 'rolled_back')),
-        cost_micros INTEGER NOT NULL,
-        provider TEXT NOT NULL,
-        observation_id INTEGER,
-        session_db_id INTEGER,
-        created_at_epoch INTEGER NOT NULL,
-        committed_at_epoch INTEGER,
-        rolled_back_at_epoch INTEGER,
-        error_reason TEXT,
-        FOREIGN KEY(observation_id) REFERENCES observations(id) ON DELETE SET NULL,
-        FOREIGN KEY(session_db_id) REFERENCES sdk_sessions(id) ON DELETE SET NULL
-      );
+      // budget_transactions table - two-phase commit tracking
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS budget_transactions (
+          id TEXT PRIMARY KEY,
+          phase TEXT NOT NULL CHECK (phase IN ('reserved', 'committed', 'rolled_back')),
+          cost_micros INTEGER NOT NULL,
+          provider TEXT NOT NULL,
+          observation_id INTEGER,
+          session_db_id INTEGER,
+          created_at_epoch INTEGER NOT NULL,
+          committed_at_epoch INTEGER,
+          rolled_back_at_epoch INTEGER,
+          error_reason TEXT,
+          FOREIGN KEY(observation_id) REFERENCES observations(id) ON DELETE SET NULL,
+          FOREIGN KEY(session_db_id) REFERENCES sdk_sessions(id) ON DELETE SET NULL
+        );
 
-      CREATE INDEX IF NOT EXISTS idx_budget_tx_phase ON budget_transactions(phase);
-      CREATE INDEX IF NOT EXISTS idx_budget_tx_created ON budget_transactions(created_at_epoch);
-      CREATE INDEX IF NOT EXISTS idx_budget_tx_session ON budget_transactions(session_db_id)
-    `);
+        CREATE INDEX IF NOT EXISTS idx_budget_tx_phase ON budget_transactions(phase);
+        CREATE INDEX IF NOT EXISTS idx_budget_tx_created ON budget_transactions(created_at_epoch);
+        CREATE INDEX IF NOT EXISTS idx_budget_tx_session ON budget_transactions(session_db_id)
+      `);
 
-    // budget_records table - historical cost records
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS budget_records (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        date_key TEXT NOT NULL,
-        month_key TEXT NOT NULL,
-        provider TEXT NOT NULL,
-        session_db_id INTEGER,
-        observation_id INTEGER,
-        input_tokens INTEGER DEFAULT 0,
-        output_tokens INTEGER DEFAULT 0,
-        cache_creation_tokens INTEGER DEFAULT 0,
-        cache_read_tokens INTEGER DEFAULT 0,
-        cost_micros INTEGER NOT NULL,
-        price_input_per_m REAL,
-        price_output_per_m REAL,
-        created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(session_db_id) REFERENCES sdk_sessions(id) ON DELETE SET NULL,
-        FOREIGN KEY(observation_id) REFERENCES observations(id) ON DELETE SET NULL
-      );
+      // budget_records table - historical cost records
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS budget_records (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          date_key TEXT NOT NULL,
+          month_key TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          session_db_id INTEGER,
+          observation_id INTEGER,
+          input_tokens INTEGER DEFAULT 0,
+          output_tokens INTEGER DEFAULT 0,
+          cache_creation_tokens INTEGER DEFAULT 0,
+          cache_read_tokens INTEGER DEFAULT 0,
+          cost_micros INTEGER NOT NULL,
+          price_input_per_m REAL,
+          price_output_per_m REAL,
+          created_at_epoch INTEGER NOT NULL,
+          FOREIGN KEY(session_db_id) REFERENCES sdk_sessions(id) ON DELETE SET NULL,
+          FOREIGN KEY(observation_id) REFERENCES observations(id) ON DELETE SET NULL
+        );
 
-      CREATE INDEX IF NOT EXISTS idx_budget_records_date ON budget_records(date_key);
-      CREATE INDEX IF NOT EXISTS idx_budget_records_month ON budget_records(month_key);
-      CREATE INDEX IF NOT EXISTS idx_budget_records_provider ON budget_records(provider);
-      CREATE INDEX IF NOT EXISTS idx_budget_records_session ON budget_records(session_db_id)
-    `);
+        CREATE INDEX IF NOT EXISTS idx_budget_records_date ON budget_records(date_key);
+        CREATE INDEX IF NOT EXISTS idx_budget_records_month ON budget_records(month_key);
+        CREATE INDEX IF NOT EXISTS idx_budget_records_provider ON budget_records(provider);
+        CREATE INDEX IF NOT EXISTS idx_budget_records_session ON budget_records(session_db_id)
+      `);
 
-    // Initialize budget_state with default values (single row)
-    const now = new Date();
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    const month = today.substring(0, 7);
+      // Initialize budget_state with default values (single row)
+      const now = new Date();
+      const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      const month = today.substring(0, 7);
 
-    this.db.prepare(`
-      INSERT OR IGNORE INTO budget_state (
-        id, budget_date, budget_month,
-        spent_today_micros, spent_month_micros,
-        daily_limit_micros, monthly_limit_micros,
-        version, last_update_epoch
-      ) VALUES (
-        1, ?, ?,
-        0, 0,
-        1000000, 20000000,
-        1, ?
-      )
-    `).run(today, month, Date.now());
+      this.db.prepare(`
+        INSERT OR IGNORE INTO budget_state (
+          id, budget_date, budget_month,
+          spent_today_micros, spent_month_micros,
+          daily_limit_micros, monthly_limit_micros,
+          version, last_update_epoch
+        ) VALUES (
+          1, ?, ?,
+          0, 0,
+          1000000, 20000000,
+          1, ?
+        )
+      `).run(today, month, Date.now());
 
-    // Commit transaction
-    this.db.run('COMMIT');
+      // Record migration inside transaction
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
 
-    // Record migration
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
+      // Commit transaction
+      this.db.run('COMMIT');
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      throw error;
+    }
 
     logger.debug('DB', 'Successfully created budget tracking tables');
   }

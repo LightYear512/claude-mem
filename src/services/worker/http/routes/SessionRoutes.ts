@@ -85,13 +85,14 @@ export class SessionRoutes extends BaseRouteHandler {
    * Get the currently selected provider name
    */
   private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' | 'dashscope' {
-    if (isDashScopeSelected() && isDashScopeAvailable()) {
-      return 'dashscope';
-    }
-    if (isOpenRouterSelected() && isOpenRouterAvailable()) {
-      return 'openrouter';
-    }
-    return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
+    // Return the user's selected provider regardless of availability.
+    // If the provider is unavailable (e.g., missing API key), startGeneratorWithProvider()
+    // will catch the error from agent.startSession() and mark it as unrecoverable,
+    // rather than silently falling back to Claude (which contradicts user intent).
+    if (isDashScopeSelected()) return 'dashscope';
+    if (isOpenRouterSelected()) return 'openrouter';
+    if (isGeminiSelected()) return 'gemini';
+    return 'claude';
   }
 
   /**

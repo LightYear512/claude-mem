@@ -77,38 +77,55 @@ export function createMiddleware(
 }
 
 /**
- * Middleware to require localhost-only access
- * Used for admin endpoints that should not be exposed when binding to 0.0.0.0
+ * Check if an IP address is a loopback or RFC 1918 private address.
+ * Accepts: 127.0.0.1, ::1, ::ffff:127.0.0.1, 10.x.x.x, 172.16-31.x.x, 192.168.x.x
+ * This covers WSL2 where the Windows host connects via a virtual network (172.x.x.x).
+ */
+function isLocalOrPrivateIp(ip: string): boolean {
+  // Normalize IPv4-mapped IPv6 (::ffff:1.2.3.4 → 1.2.3.4)
+  const normalized = ip.replace(/^::ffff:/, '');
+
+  // Loopback
+  if (normalized === '127.0.0.1' || normalized === '::1' || normalized === 'localhost') {
+    return true;
+  }
+
+  // RFC 1918 private ranges
+  const parts = normalized.split('.').map(Number);
+  if (parts.length !== 4 || parts.some(p => isNaN(p))) return false;
+
+  // 10.0.0.0/8
+  if (parts[0] === 10) return true;
+  // 172.16.0.0/12 (172.16.x.x – 172.31.x.x)
+  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+  // 192.168.0.0/16
+  if (parts[0] === 192 && parts[1] === 168) return true;
+
+  return false;
+}
+
+/**
+ * Middleware to require local/private network access.
+ * Used for sensitive endpoints that should not be exposed to the public internet.
  *
- * Checks both the TCP connection IP and the Origin header.
- * The Origin check handles WSL2 where the Windows browser connects via a virtual
- * network interface (e.g. 172.x.x.x) but the Origin header is still localhost.
+ * Uses TCP connection IP only — Origin header is NOT trusted for access control
+ * (it is client-supplied and trivially forgeable).
+ *
+ * Accepts localhost and RFC 1918 private IPs to support WSL2 (where the Windows
+ * browser connects via a virtual network interface with a 172.x.x.x address).
  */
 export function requireLocalhost(req: Request, res: Response, next: NextFunction): void {
   const clientIp = req.ip || req.connection.remoteAddress || '';
-  const isLocalhostIp =
-    clientIp === '127.0.0.1' ||
-    clientIp === '::1' ||
-    clientIp === '::ffff:127.0.0.1' ||
-    clientIp === 'localhost';
 
-  // In WSL2, browser requests arrive from the Windows host's virtual network IP,
-  // not 127.0.0.1. The Origin header still reflects the localhost URL the user accessed.
-  const origin = req.headers.origin || '';
-  const isLocalhostOrigin =
-    origin.startsWith('http://localhost:') ||
-    origin.startsWith('http://127.0.0.1:');
-
-  if (!isLocalhostIp && !isLocalhostOrigin) {
-    logger.warn('SECURITY', 'Admin endpoint access denied - not localhost', {
+  if (!isLocalOrPrivateIp(clientIp)) {
+    logger.warn('HTTP', 'Endpoint access denied - not local/private IP', {
       endpoint: req.path,
       clientIp,
-      origin,
       method: req.method
     });
     res.status(403).json({
       error: 'Forbidden',
-      message: 'Admin endpoints are only accessible from localhost'
+      message: 'This endpoint is only accessible from localhost or private networks'
     });
     return;
   }

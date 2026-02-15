@@ -586,14 +586,36 @@ export class WorkerService {
         const pendingCount = pendingStore.getPendingCount(session.sessionDbId);
 
         if (pendingCount > 0) {
+          // Limit consecutive restarts to prevent infinite crash-restart loops
+          const MAX_CONSECUTIVE_RESTARTS = 3;
+          session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1;
+
+          if (session.consecutiveRestarts > MAX_CONSECUTIVE_RESTARTS) {
+            logger.error('SYSTEM', 'Generator restart limit exceeded - stopping to prevent runaway costs', {
+              sessionId: session.sessionDbId,
+              pendingCount,
+              consecutiveRestarts: session.consecutiveRestarts,
+              maxRestarts: MAX_CONSECUTIVE_RESTARTS,
+              action: 'Generator will NOT restart. Messages remain in pending state.'
+            });
+            session.abortController.abort();
+            this.broadcastProcessingStatus();
+            return;
+          }
+
           logger.info('SYSTEM', 'Pending work remains after generator exit, restarting with fresh AbortController', {
             sessionId: session.sessionDbId,
-            pendingCount
+            pendingCount,
+            consecutiveRestarts: session.consecutiveRestarts,
+            maxRestarts: MAX_CONSECUTIVE_RESTARTS
           });
           // Reset AbortController for restart
           session.abortController = new AbortController();
           // Restart processor
           this.startSessionProcessor(session, 'pending-work-restart');
+        } else {
+          // Natural completion with no pending work - reset restart counter
+          session.consecutiveRestarts = 0;
         }
 
         this.broadcastProcessingStatus();

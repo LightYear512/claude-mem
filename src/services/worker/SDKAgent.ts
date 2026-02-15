@@ -160,6 +160,8 @@ export class SDKAgent {
     // Use custom spawn to capture PIDs for zombie process cleanup (Issue #737)
     // Use dedicated cwd to isolate observer sessions from user's `claude --resume` list
     ensureDir(OBSERVER_SESSIONS_DIR);
+    // CRITICAL: try must wrap query() so budget rollback fires on synchronous throw or spawn ENOENT
+    try {
     // CRITICAL: Pass isolated env to prevent Issue #733 (API key pollution from project .env files)
     const queryResult = query({
       prompt: messageGenerator,
@@ -180,7 +182,6 @@ export class SDKAgent {
     });
 
     // Process SDK messages
-    try {
     for await (const message of queryResult) {
       // Capture or update memory session ID from SDK message
       // IMPORTANT: The SDK may return a DIFFERENT session_id on resume than what we sent!
@@ -266,6 +267,18 @@ export class SDKAgent {
               cacheReadTokens
             );
             sessionTotalCostUsd += responseCost;
+
+            // Mid-session budget check: abort if cumulative cost exceeds daily limit
+            const config = this.budgetController.getConfig();
+            const dailyLimitUsd = config.dailyLimitMicros / 1_000_000;
+            if (sessionTotalCostUsd > dailyLimitUsd) {
+              logger.warn('BUDGET', 'SDK session cost exceeded daily limit — aborting', {
+                sessionDbId: session.sessionDbId,
+                sessionCostUsd: sessionTotalCostUsd.toFixed(4),
+                dailyLimitUsd: dailyLimitUsd.toFixed(2)
+              });
+              session.abortController.abort();
+            }
           }
 
           logger.debug('SDK', 'Token usage captured', {
@@ -322,15 +335,15 @@ export class SDKAgent {
       }
     }
 
-    // Commit budget with actual cost
+    // Commit budget with actual cost — mark as settled so finally() knows not to rollback
     if (sessionTxId && this.budgetController) {
       this.budgetController.commit(sessionTxId, 0, sessionTotalCostUsd, {
         inputTokens: session.cumulativeInputTokens,
         outputTokens: session.cumulativeOutputTokens
       });
+      sessionTxId = null; // Mark as settled
       logger.debug('BUDGET', 'SDK session cost committed', {
         sessionDbId: session.sessionDbId,
-        txId: sessionTxId,
         actualCost: sessionTotalCostUsd.toFixed(6),
         totalInputTokens: session.cumulativeInputTokens,
         totalOutputTokens: session.cumulativeOutputTokens
@@ -346,17 +359,16 @@ export class SDKAgent {
     });
 
     } catch (error) {
-      // Rollback budget on SDK failure
+      throw error;
+    } finally {
+      // Rollback any unsettled budget reservation (covers throw, abort, and early return paths)
       if (sessionTxId && this.budgetController) {
-        const reason = (error as Error).message || 'SDK error';
-        this.budgetController.rollback(sessionTxId, reason);
-        logger.debug('BUDGET', 'SDK session cost rolled back', {
+        this.budgetController.rollback(sessionTxId, 'session ended without commit');
+        logger.debug('BUDGET', 'SDK session cost rolled back in finally', {
           sessionDbId: session.sessionDbId,
-          txId: sessionTxId,
-          reason
+          txId: sessionTxId
         });
       }
-      throw error;
     }
   }
 
@@ -519,12 +531,23 @@ export class SDKAgent {
 
     // 2. Try auto-detection
     try {
-      const claudePath = execSync(
+      const rawOutput = execSync(
         process.platform === 'win32' ? 'where claude' : 'which claude',
         { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
-      ).trim().split('\n')[0].trim();
+      ).trim();
 
-      if (claudePath) return claudePath;
+      if (process.platform === 'win32') {
+        // On Windows, 'where claude' returns multiple paths:
+        //   C:\Program Files\nodejs\claude        (extensionless Unix shebang - NOT executable by spawn)
+        //   C:\Program Files\nodejs\claude.cmd    (cmd wrapper - works with spawn)
+        // spawn() without shell:true cannot execute extensionless files → ENOENT
+        const lines = rawOutput.split('\n').map(l => l.trim()).filter(Boolean);
+        const claudePath = lines.find(l => /\.(cmd|exe)$/i.test(l)) || lines[0];
+        if (claudePath) return claudePath;
+      } else {
+        const claudePath = rawOutput.split('\n')[0].trim();
+        if (claudePath) return claudePath;
+      }
     } catch (error) {
       // [ANTI-PATTERN IGNORED]: Fallback behavior - which/where failed, continue to throw clear error
       logger.debug('SDK', 'Claude executable auto-detection failed', {}, error as Error);

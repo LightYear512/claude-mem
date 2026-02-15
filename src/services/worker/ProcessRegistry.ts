@@ -300,6 +300,15 @@ export function createPidCapturingSpawn(sessionDbId: number) {
         sessionDbId,
         error: err.message
       }, err);
+
+      // On spawn failure (ENOENT/EACCES), child.pid is undefined because the process
+      // never started. Destroy stdio streams so the SDK's async iterable terminates
+      // instead of hanging forever waiting for output from a dead process.
+      if (!child.pid) {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        child.stdin?.destroy();
+      }
     });
 
     // Prevent unhandled 'error' events on stdin pipe from crashing the worker.
