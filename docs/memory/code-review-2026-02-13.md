@@ -58,7 +58,7 @@
 | H8 | `SettingsRoutes.ts` + `GeminiAgent.ts` | GEMINI_API_URL 无验证 + SSRF | ✅ 已修复：URL 格式验证 + test-connection 端点加 requireLocalhost |
 | H9 | `ProcessRegistry.ts:340-363` | subprocess stderr 日志可能含敏感信息 | ⚠️ 由 C1 修复缓解（logger 统一脱敏），完整修复待定 |
 
-### MEDIUM (13) — 11 项已修复，2 项待修复
+### MEDIUM (13) — 12 项已修复，1 项风险极低暂缓
 
 | ID | 文件 | 描述 | 状态 |
 |----|------|------|------|
@@ -70,10 +70,10 @@
 | M6 | `SettingsRoutes.ts:144-149` | GET /api/settings 返回明文 API key | ✅ 已修复：返回前将 API key 替换为 '••••••••'（保留空/非空区分） |
 | M7 | `SettingsRoutes.ts:237` | CLAUDE_MEM_EMBEDDING_FUNCTION 无验证 | ✅ 已修复：在 validateSettings() 中校验值是否在 VALID_EMBEDDING_MODELS 列表中 |
 | M8 | `SessionRoutes.ts:29-30,338` | spawnInProgress/crashRecoveryScheduled 在 session 删除时未清理 | ✅ 已修复：添加 cleanupSessionState() 在 delete/complete 时清理 |
-| M9 | `SessionManager.ts:296-311` | resetProcessingToPending 与生成器清理可能竞态 | 待修复 |
+| M9 | `SessionManager.ts:296-311` | resetProcessingToPending 与生成器清理可能竞态 | ⚠️ 风险极低：await generatorPromise 已提供同步点，暂缓 |
 | M10 | `worker-service.ts:30-47` | spawn throttle lock file TOCTOU 竞态 | ✅ 已修复：合并为单个 statSync + catch，消除 existsSync check-then-use 间隙 |
 | M11 | `worker-service.ts:444-448` | fire-and-forget vector backfill promise | ✅ 已修复：保留 promise 引用 + 5 分钟超时 + shutdown 时等待完成 |
-| M12 | `mcp-server.ts:354-365` | Windows detached spawn 孤儿进程风险 | 待修复 |
+| M12 | `mcp-server.ts:354-365` | Windows detached spawn 孤儿进程风险 | ✅ 已修复：添加 exit 监听器 + 超时后 kill 孤儿进程 + 提前退出检测 |
 | M13 | `worker-service.ts:164-172,384` | dbReady promise 初始化失败时永不 resolve | ✅ 已修复：添加 rejectDbReady，初始化失败时 reject 使等待请求返回 503 |
 
 ### LOW (5)
@@ -102,10 +102,14 @@ M5（JSON.parse try/catch）, M8（session 状态清理）, M10（TOCTOU 消除�
 ### ✅ 第五批（中等复杂度） — 已完成
 M3（乐观锁版本递增）, M6（API key 脱敏）, M7（embedding 模型验证）, M11（backfill promise 跟踪+超时）
 
-### 剩余待修复
+### ✅ 第六批 — 已完成
+M12（孤儿进程 kill + exit 监听）
+
+### 剩余
 - **H7** (CLAUDE_CODE_PATH 验证): 由 C2 保护，本地风险低，无可靠验证方案
 - **H9** (stderr 敏感信息): 由 C1 logger 脱敏缓解
-- **M9, M12**: 2 项 MEDIUM（需更多设计考量）/ 5 项 LOW 待处理
+- **M9** (generator 竞态): 风险极低，await generatorPromise 已提供同步点，暂缓
+- 5 项 LOW 待处理
 
 ---
 

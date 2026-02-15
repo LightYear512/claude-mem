@@ -358,8 +358,15 @@ async function main() {
         windowsHide: true,
       });
 
+      let childExited = false;
       child.on('error', (err) => {
         logger.error('SYSTEM', 'Worker auto-start child process error', undefined, err);
+      });
+      child.on('exit', (code) => {
+        childExited = true;
+        if (code !== 0 && code !== null) {
+          logger.warn('SYSTEM', `Worker child exited unexpectedly`, { pid: child.pid, exitCode: code });
+        }
       });
 
       child.unref();
@@ -370,6 +377,7 @@ async function main() {
       let healthy = false;
       while (Date.now() - start < maxWait) {
         await new Promise(r => setTimeout(r, 1000));
+        if (childExited) break; // Child already exited, no point waiting
         if (await verifyWorkerConnection()) {
           healthy = true;
           break;
@@ -379,7 +387,13 @@ async function main() {
       if (healthy) {
         logger.info('SYSTEM', 'Worker auto-started by MCP server', undefined, { workerUrl: WORKER_BASE_URL });
       } else {
-        logger.error('SYSTEM', 'Worker auto-start failed (timeout after 30s)', undefined, { workerUrl: WORKER_BASE_URL });
+        // Kill orphaned child process if it's still running
+        if (!childExited) {
+          try { child.kill(); } catch { /* best-effort cleanup */ }
+          logger.error('SYSTEM', 'Worker auto-start failed (timeout after 30s), killed child process', { pid: child.pid });
+        } else {
+          logger.error('SYSTEM', 'Worker auto-start failed (child exited before becoming healthy)', { pid: child.pid });
+        }
         logger.error('SYSTEM', 'Start Worker with: npm run worker:restart');
       }
     } catch (error) {
