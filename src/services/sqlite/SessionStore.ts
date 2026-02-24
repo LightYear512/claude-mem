@@ -49,10 +49,10 @@ export class SessionStore {
     this.renameSessionIdColumns();
     this.repairSessionIdColumnRename();
     this.addFailedAtEpochColumn();
-    this.createBudgetTables();
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
+    this.createBudgetTables();
   }
 
   /**
@@ -752,13 +752,13 @@ export class SessionStore {
    * Implements cost tracking with two-phase commit and optimistic locking
    */
   private createBudgetTables(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(22) as SchemaVersion | undefined;
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(24) as SchemaVersion | undefined;
     if (applied) return;
 
     // Check if budget_state table already exists
     const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='budget_state'").all() as TableNameRow[];
     if (tables.length > 0) {
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
       return;
     }
 
@@ -854,7 +854,7 @@ export class SessionStore {
       `).run(today, month, Date.now());
 
       // Record migration inside transaction
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
 
       // Commit transaction
       this.db.run('COMMIT');

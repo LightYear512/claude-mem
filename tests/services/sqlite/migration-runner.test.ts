@@ -117,7 +117,7 @@ describe('MigrationRunner', () => {
       expect(versions).toContain(5);   // worker_port
       expect(versions).toContain(6);   // prompt tracking
       expect(versions).toContain(7);   // remove unique constraint
-      expect(versions).toContain(8);   // hierarchical fields
+      expect(versions).toContain(12);  // hierarchical fields + ai_analysis
       expect(versions).toContain(9);   // text nullable
       expect(versions).toContain(10);  // user_prompts
       expect(versions).toContain(11);  // discovery_tokens
@@ -127,6 +127,8 @@ describe('MigrationRunner', () => {
       expect(versions).toContain(20);  // failed_at_epoch
       expect(versions).toContain(21);  // ON UPDATE CASCADE
       expect(versions).toContain(22);  // content_hash
+      expect(versions).toContain(23);  // custom_title
+      expect(versions).toContain(24);  // budget tables
     });
   });
 

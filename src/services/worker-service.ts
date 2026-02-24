@@ -225,6 +225,11 @@ export class WorkerService {
       this.rejectDbReady = reject;
     });
 
+    // Full initialization promise (DB + search + MCP)
+    this.initializationComplete = new Promise((resolve) => {
+      this.resolveInitialization = resolve;
+    });
+
     // Initialize service layer
     this.dbManager = new DatabaseManager();
     this.sessionManager = new SessionManager(this.dbManager);
@@ -1365,12 +1370,6 @@ async function main() {
       }
       // Event loop keeps process alive as HTTP server
       break;
-    }
-
-    default: {
-      console.error(`Unknown command: ${command}`);
-      console.error('Usage: worker-service <start|stop|restart|status|hook|cursor|generate|clean>');
-      process.exit(1);
     }
   }
 }
