@@ -2,6 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { LocaleProvider } from './hooks/useLocale';
 
 const container = document.getElementById('root');
 if (!container) {
@@ -11,6 +12,8 @@ if (!container) {
 const root = createRoot(container);
 root.render(
   <ErrorBoundary>
-    <App />
+    <LocaleProvider>
+      <App />
+    </LocaleProvider>
   </ErrorBoundary>
 );

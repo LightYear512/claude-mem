@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useLocale } from '../hooks/useLocale';
 
 // Log levels and components matching the logger.ts definitions
 type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
@@ -74,6 +75,7 @@ interface LogsDrawerProps {
 }
 
 export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
+  const { t } = useLocale();
   const [logs, setLogs] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -152,7 +154,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   }, [logs, scrollToBottom]);
 
   const handleClearLogs = useCallback(async () => {
-    if (!confirm('Are you sure you want to clear all logs?')) {
+    if (!confirm(t('logs.clearConfirm'))) {
       return;
     }
     setIsLoading(true);
@@ -342,7 +344,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
 
       <div className="console-header">
         <div className="console-tabs">
-          <div className="console-tab active">Console</div>
+          <div className="console-tab active">{t('logs.console')}</div>
         </div>
         <div className="console-controls">
           <label className="console-auto-refresh">
@@ -351,13 +353,13 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
               checked={autoRefresh}
               onChange={(e) => setAutoRefresh(e.target.checked)}
             />
-            Auto-refresh
+            {t('logs.autoRefresh')}
           </label>
           <button
             className="console-control-btn"
             onClick={fetchLogs}
             disabled={isLoading}
-            title="Refresh logs"
+            title={t('logs.refresh')}
           >
             ↻
           </button>
@@ -367,7 +369,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
               wasAtBottomRef.current = true;
               scrollToBottom();
             }}
-            title="Scroll to bottom"
+            title={t('logs.scrollToBottom')}
           >
             ⬇
           </button>
@@ -375,14 +377,14 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
             className="console-control-btn console-clear-btn"
             onClick={handleClearLogs}
             disabled={isLoading}
-            title="Clear logs"
+            title={t('logs.clear')}
           >
             🗑
           </button>
           <button
             className="console-control-btn"
             onClick={onClose}
-            title="Close console"
+            title={t('logs.close')}
           >
             ✕
           </button>
@@ -392,7 +394,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
       {/* Filter Bar */}
       <div className="console-filters">
         <div className="console-filter-section">
-          <span className="console-filter-label">Quick:</span>
+          <span className="console-filter-label">{t('logs.quickFilter')}</span>
           <div className="console-filter-chips">
             <button
               className={`console-filter-chip ${alignmentOnly ? 'active' : ''}`}
@@ -400,14 +402,14 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
               style={{
                 '--chip-color': '#f0883e',
               } as React.CSSProperties}
-              title="Show only session alignment logs"
+              title={t('logs.alignmentTitle')}
             >
-              🔗 Alignment
+              🔗 {t('logs.alignment')}
             </button>
           </div>
         </div>
         <div className="console-filter-section">
-          <span className="console-filter-label">Levels:</span>
+          <span className="console-filter-label">{t('logs.levels')}</span>
           <div className="console-filter-chips">
             {LOG_LEVELS.map(level => (
               <button
@@ -425,14 +427,14 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
             <button
               className="console-filter-action"
               onClick={() => setAllLevels(activeLevels.size === 0)}
-              title={activeLevels.size === LOG_LEVELS.length ? 'Select none' : 'Select all'}
+              title={activeLevels.size === LOG_LEVELS.length ? t('logs.selectNone') : t('logs.selectAll')}
             >
               {activeLevels.size === LOG_LEVELS.length ? '○' : '●'}
             </button>
           </div>
         </div>
         <div className="console-filter-section">
-          <span className="console-filter-label">Components:</span>
+          <span className="console-filter-label">{t('logs.components')}</span>
           <div className="console-filter-chips">
             {LOG_COMPONENTS.map(comp => (
               <button
@@ -450,7 +452,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
             <button
               className="console-filter-action"
               onClick={() => setAllComponents(activeComponents.size === 0)}
-              title={activeComponents.size === LOG_COMPONENTS.length ? 'Select none' : 'Select all'}
+              title={activeComponents.size === LOG_COMPONENTS.length ? t('logs.selectNone') : t('logs.selectAll')}
             >
               {activeComponents.size === LOG_COMPONENTS.length ? '○' : '●'}
             </button>
@@ -467,7 +469,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
       <div className="console-content" ref={contentRef}>
         <div className="console-logs">
           {filteredLines.length === 0 ? (
-            <div className="log-line log-line-empty">No logs available</div>
+            <div className="log-line log-line-empty">{t('logs.noLogs')}</div>
           ) : (
             filteredLines.map((line, index) => renderLogLine(line, index))
           )}

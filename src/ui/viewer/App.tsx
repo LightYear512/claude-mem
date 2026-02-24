@@ -8,6 +8,7 @@ import { useSettings } from './hooks/useSettings';
 import { useStats } from './hooks/useStats';
 import { usePagination } from './hooks/usePagination';
 import { useTheme } from './hooks/useTheme';
+import { useLocale } from './hooks/useLocale';
 import { Observation, Summary, UserPrompt } from './types';
 import { mergeAndDeduplicateByProject } from './utils/data';
 
@@ -23,6 +24,7 @@ export function App() {
   const { settings, saveSettings, applySettings, isSaving, saveStatus } = useSettings();
   const { stats, refreshStats } = useStats();
   const { preference, resolvedTheme, setThemePreference } = useTheme();
+  const { t } = useLocale();
   const pagination = usePagination(currentFilter);
 
   // When filtering by project: ONLY use paginated data (API-filtered)
@@ -128,7 +130,7 @@ export function App() {
       <button
         className="console-toggle-btn"
         onClick={toggleLogsModal}
-        title="Toggle Console"
+        title={t('app.toggleConsole')}
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="4 17 10 11 4 5"></polyline>

@@ -1,19 +1,21 @@
 import React from 'react';
 import { UserPrompt } from '../types';
 import { formatDate } from '../utils/formatters';
+import { useLocale } from '../hooks/useLocale';
 
 interface PromptCardProps {
   prompt: UserPrompt;
 }
 
 export function PromptCard({ prompt }: PromptCardProps) {
+  const { t } = useLocale();
   const date = formatDate(prompt.created_at_epoch);
 
   return (
     <div className="card prompt-card">
       <div className="card-header">
         <div className="card-header-left">
-          <span className="card-type">Prompt</span>
+          <span className="card-type">{t('prompt.label')}</span>
           <span className="card-project">{prompt.project}</span>
         </div>
       </div>
