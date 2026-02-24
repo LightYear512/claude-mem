@@ -56,6 +56,7 @@ export interface SettingsDefaults {
   // Feature Toggles
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
+  CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: string;
   // Vector Search Configuration
   CLAUDE_MEM_EMBEDDING_FUNCTION: string;
   // Budget Tracking Configuration
@@ -130,6 +131,7 @@ export class SettingsDefaultsManager {
     // Feature Toggles
     CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
+    CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'true',
     // Vector Search Configuration
     CLAUDE_MEM_EMBEDDING_FUNCTION: 'dashscope:text-embedding-v3:768',  // DashScope text-embedding-v3 768d, or 'default' for local all-MiniLM-L6-v2
     // Budget Tracking Configuration
