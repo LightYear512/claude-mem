@@ -115,18 +115,26 @@ export function searchAIAnalyses(
   project: string,
   limit: number = 10
 ): AIAnalysisSearchResult[] {
-  const stmt = db.prepare(`
-    SELECT a.*
-    FROM ai_analysis a
-    JOIN ai_analysis_fts fts ON a.id = fts.rowid
-    WHERE fts MATCH ?
-    AND a.project = ?
-    ORDER BY a.created_at_epoch DESC
-    LIMIT ?
-  `);
+  try {
+    const stmt = db.prepare(`
+      SELECT a.*
+      FROM ai_analysis a
+      JOIN ai_analysis_fts fts ON a.id = fts.rowid
+      WHERE fts MATCH ?
+      AND a.project = ?
+      ORDER BY a.created_at_epoch DESC
+      LIMIT ?
+    `);
 
-  const rows = stmt.all(query, project, limit) as StoredAIAnalysis[];
-  return rows.map(formatAIAnalysisResult);
+    const rows = stmt.all(query, project, limit) as StoredAIAnalysis[];
+    return rows.map(formatAIAnalysisResult);
+  } catch (error) {
+    logger.warn('AI_ANALYSIS', 'FTS search failed, returning empty results', {
+      query: query.slice(0, 100),
+      project
+    }, error as Error);
+    return [];
+  }
 }
 
 function safeParseJsonArray(value: string | null, field: string, rowId: number): unknown[] {

@@ -266,7 +266,8 @@ export class WorkerService {
       workerPath: __filename,
       getAiStatus: () => {
         let provider = 'claude';
-        if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
+        if (isDashScopeSelected() && isDashScopeAvailable()) provider = 'dashscope';
+        else if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
         else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
         return {
           provider,
@@ -393,6 +394,7 @@ export class WorkerService {
       () => {
         // Hot-reload ChromaSync after vector DB reset (no process restart needed)
         const chromaSync = this.dbManager.getChromaSync();
+        if (!chromaSync) return;
         chromaSync.close().then(() => {
           logger.info('CHROMA', 'ChromaSync reset after vector DB deletion');
           // Trigger backfill to re-index all data with new embedding model
@@ -547,21 +549,24 @@ export class WorkerService {
 
       // Backfill vector database (non-blocking, tracked for shutdown)
       // Re-indexes any observations missing from ChromaDB (e.g., after vector DB reset)
-      const BACKFILL_TIMEOUT_MS = 300_000; // 5 minutes
-      this.backfillPromise = Promise.race([
-        this.dbManager.getChromaSync().ensureBackfilled(),
-        new Promise<never>((_, reject) => {
-          this.backfillTimer = setTimeout(() => reject(new Error('Vector backfill timeout')), BACKFILL_TIMEOUT_MS);
-        })
-      ]).catch((error) => {
-        logger.warn('CHROMA', 'Vector backfill failed (non-fatal)', {}, error as Error);
-      }).finally(() => {
-        if (this.backfillTimer) {
-          clearTimeout(this.backfillTimer);
-          this.backfillTimer = null;
-        }
-        this.backfillPromise = null;
-      });
+      const chromaSync = this.dbManager.getChromaSync();
+      if (chromaSync) {
+        const BACKFILL_TIMEOUT_MS = 300_000; // 5 minutes
+        this.backfillPromise = Promise.race([
+          chromaSync.ensureBackfilled(),
+          new Promise<never>((_, reject) => {
+            this.backfillTimer = setTimeout(() => reject(new Error('Vector backfill timeout')), BACKFILL_TIMEOUT_MS);
+          })
+        ]).catch((error) => {
+          logger.warn('CHROMA', 'Vector backfill failed (non-fatal)', {}, error as Error);
+        }).finally(() => {
+          if (this.backfillTimer) {
+            clearTimeout(this.backfillTimer);
+            this.backfillTimer = null;
+          }
+          this.backfillPromise = null;
+        });
+      }
 
       // Start orphan reaper to clean up zombie processes (Issue #737)
       this.stopOrphanReaper = startOrphanReaper(() => {
@@ -790,6 +795,15 @@ export class WorkerService {
             return;
           }
 
+          // Re-check session existence right before restart to prevent orphan generator
+          // (session may have been deleted between the top-of-finally check and here)
+          if (!this.sessionManager.getSession(session.sessionDbId)) {
+            logger.debug('SYSTEM', 'Session deleted before restart, skipping', {
+              sessionId: session.sessionDbId
+            });
+            return;
+          }
+
           logger.info('SYSTEM', 'Pending work remains after generator exit, restarting with fresh AbortController', {
             sessionId: session.sessionDbId,
             pendingCount,
@@ -1008,18 +1022,19 @@ export class WorkerService {
       this.stopOrphanReaper = null;
     }
 
+    // Stop stale session reaper BEFORE backfill await to prevent it from
+    // racing with shutdownAll() during the up-to-5s backfill grace period
+    if (this.staleSessionReaperInterval) {
+      clearInterval(this.staleSessionReaperInterval);
+      this.staleSessionReaperInterval = null;
+    }
+
     // Wait for vector backfill to complete (with a short grace period)
     if (this.backfillPromise) {
       await Promise.race([
         this.backfillPromise,
         new Promise<void>((resolve) => setTimeout(resolve, 5000))
       ]);
-    }
-
-    // Stop stale session reaper (Issue #1168)
-    if (this.staleSessionReaperInterval) {
-      clearInterval(this.staleSessionReaperInterval);
-      this.staleSessionReaperInterval = null;
     }
 
     await performGracefulShutdown({

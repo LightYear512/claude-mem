@@ -34,6 +34,9 @@ import {
 export class BudgetController {
   private warningTriggered = false;
   private exceededTriggered = false;
+  private configCache: BudgetConfig | null = null;
+  private configCacheTime = 0;
+  private static readonly CONFIG_CACHE_TTL_MS = 30_000; // 30 seconds
 
   constructor(
     private db: Database,
@@ -548,17 +551,26 @@ export class BudgetController {
    * Get configuration from settings file.
    */
   getConfig(): BudgetConfig {
+    const now = Date.now();
+    if (this.configCache && (now - this.configCacheTime) < BudgetController.CONFIG_CACHE_TTL_MS) {
+      return this.configCache;
+    }
+
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const presetId = settings.CLAUDE_MEM_BUDGET_PRESET || 'claude-haiku';
     const preset = getPresetById(presetId) ?? getDefaultPreset();
 
-    return {
+    const config: BudgetConfig = {
       enabled: settings.CLAUDE_MEM_BUDGET_ENABLED === 'true',
       preset: presetId,
       billingType: preset.billingType,
       dailyLimitMicros: Math.round(parseFloat(settings.CLAUDE_MEM_BUDGET_DAILY_LIMIT || '1.00') * 1_000_000),
       monthlyLimitMicros: Math.round(parseFloat(settings.CLAUDE_MEM_BUDGET_MONTHLY_LIMIT || '20.00') * 1_000_000),
     };
+
+    this.configCache = config;
+    this.configCacheTime = now;
+    return config;
   }
 
   /**
@@ -566,6 +578,8 @@ export class BudgetController {
    * Call when settings change.
    */
   syncConfigToState(): void {
+    // Invalidate cache so we read fresh settings
+    this.configCache = null;
     const config = this.getConfig();
 
     this.db.prepare(`

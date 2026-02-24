@@ -97,18 +97,24 @@ export async function waitForSlot(maxConcurrent: number, timeoutMs: number = 60_
   logger.info('PROCESS', `Pool limit reached (${processRegistry.size}/${maxConcurrent}), waiting for slot...`);
 
   return new Promise<void>((resolve, reject) => {
+    let settled = false;
+
     const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       const idx = slotWaiters.indexOf(onSlot);
       if (idx >= 0) slotWaiters.splice(idx, 1);
       reject(new Error(`Timed out waiting for agent pool slot after ${timeoutMs}ms`));
     }, timeoutMs);
 
     const onSlot = () => {
-      clearTimeout(timeout);
+      if (settled) return;
       if (processRegistry.size < maxConcurrent) {
+        settled = true;
+        clearTimeout(timeout);
         resolve();
       } else {
-        // Still full, re-queue
+        // Still full, re-queue (timeout remains active)
         slotWaiters.push(onSlot);
       }
     };

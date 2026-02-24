@@ -108,6 +108,12 @@ export function expandHomePath(inputPath: string): string {
   if (inputPath.startsWith('~')) {
     return join(homedir(), inputPath.slice(1));
   }
+  // Expand Windows %VAR% environment variables (e.g., %USERPROFILE%, %APPDATA%)
+  if (process.platform === 'win32') {
+    return inputPath.replace(/%([^%]+)%/g, (_, varName: string) => {
+      return process.env[varName] || `%${varName}%`;
+    });
+  }
   return inputPath;
 }
 

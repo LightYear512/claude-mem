@@ -322,6 +322,11 @@ export class ChromaMcpManager {
    * client.close() sends stdin close -> SIGTERM -> SIGKILL to the subprocess.
    */
   async stop(): Promise<void> {
+    // Wait for any in-progress connection attempt to settle before tearing down
+    if (this.connecting) {
+      try { await this.connecting; } catch { /* ignore - we're stopping anyway */ }
+    }
+
     if (!this.client) {
       logger.debug('CHROMA_MCP', 'No active MCP connection to stop');
       return;

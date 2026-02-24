@@ -15,6 +15,7 @@ interface TailState {
 class FileTailer {
   private watcher: ReturnType<typeof fsWatch> | null = null;
   private tailState: TailState;
+  private reading = false;
 
   constructor(
     private filePath: string,
@@ -26,10 +27,31 @@ class FileTailer {
   }
 
   start(): void {
-    this.readNewData().catch(() => undefined);
+    this.readNewDataSafe();
     this.watcher = fsWatch(this.filePath, { persistent: true }, () => {
-      this.readNewData().catch(() => undefined);
+      this.readNewDataSafe();
     });
+  }
+
+  private pendingRead = false;
+
+  private readNewDataSafe(): void {
+    if (this.reading) {
+      this.pendingRead = true;
+      return;
+    }
+    this.reading = true;
+    this.readNewData()
+      .catch((error) => {
+        logger.debug('TRANSCRIPT', 'readNewData error', {}, error as Error);
+      })
+      .finally(() => {
+        this.reading = false;
+        if (this.pendingRead) {
+          this.pendingRead = false;
+          this.readNewDataSafe();
+        }
+      });
   }
 
   close(): void {
@@ -122,11 +144,15 @@ export class TranscriptWatcher {
 
     const rescanIntervalMs = watch.rescanIntervalMs ?? 5000;
     const timer = setInterval(async () => {
-      const newFiles = this.resolveWatchFiles(resolvedPath);
-      for (const filePath of newFiles) {
-        if (!this.tailers.has(filePath)) {
-          await this.addTailer(filePath, watch, schema);
+      try {
+        const newFiles = this.resolveWatchFiles(resolvedPath);
+        for (const filePath of newFiles) {
+          if (!this.tailers.has(filePath)) {
+            await this.addTailer(filePath, watch, schema);
+          }
         }
+      } catch (error) {
+        logger.debug('TRANSCRIPT', 'Rescan error', {}, error as Error);
       }
     }, rescanIntervalMs);
     this.rescanTimers.push(timer);
