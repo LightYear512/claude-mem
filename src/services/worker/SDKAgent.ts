@@ -237,11 +237,11 @@ export class SDKAgent {
             : typeof content === 'string' ? content : '';
 
           // Check for context overflow - prevents infinite retry loops
-          if (textContent.includes('prompt is too long') ||
-              textContent.includes('context window')) {
-            logger.error('SDK', 'Context overflow detected - terminating session');
-            session.abortController.abort();
-            return;
+          // Uses case-insensitive match to catch both "prompt is too long" and "Prompt is too long"
+          const lowerTextContent = textContent.toLowerCase();
+          if (lowerTextContent.includes('prompt is too long') ||
+              lowerTextContent.includes('context window')) {
+            throw new Error('Claude session context overflow: prompt is too long');
           }
 
           const responseSize = textContent.length;
@@ -314,11 +314,6 @@ export class SDKAgent {
               sessionId: session.sessionDbId,
               promptNumber: session.lastPromptNumber
             }, truncatedResponse);
-          }
-
-          // Detect fatal context overflow and terminate gracefully (issue #870)
-          if (typeof textContent === 'string' && textContent.includes('Prompt is too long')) {
-            throw new Error('Claude session context overflow: prompt is too long');
           }
 
           // Detect invalid API key — SDK returns this as response text, not an error.

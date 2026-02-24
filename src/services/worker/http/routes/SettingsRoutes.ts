@@ -737,15 +737,24 @@ export class SettingsRoutes extends BaseRouteHandler {
         if (requestedDimensions) {
           requestBody.dimensions = requestedDimensions;
         }
-        const response = await fetch(apiUrl, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(requestBody),
-          signal: AbortSignal.timeout(30000),
-        });
+        // Use setTimeout-based abort instead of AbortSignal.timeout()
+        // which crashes Bun on Windows (see HealthMonitor.ts for precedent)
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 30000);
+        let response: Response;
+        try {
+          response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${apiKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(requestBody),
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timer);
+        }
 
         if (!response.ok) {
           const errorText = await response.text();

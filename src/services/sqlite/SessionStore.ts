@@ -214,60 +214,65 @@ export class SessionStore {
 
     logger.debug('DB', 'Removing UNIQUE constraint from session_summaries.memory_session_id');
 
-    // Begin transaction
-    this.db.run('BEGIN TRANSACTION');
+    try {
+      // Begin transaction
+      this.db.run('BEGIN TRANSACTION');
 
-    // Clean up leftover temp table from a previously-crashed run
-    this.db.run('DROP TABLE IF EXISTS session_summaries_new');
+      // Clean up leftover temp table from a previously-crashed run
+      this.db.run('DROP TABLE IF EXISTS session_summaries_new');
 
-    // Create new table without UNIQUE constraint
-    this.db.run(`
-      CREATE TABLE session_summaries_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        memory_session_id TEXT NOT NULL,
-        project TEXT NOT NULL,
-        request TEXT,
-        investigated TEXT,
-        learned TEXT,
-        completed TEXT,
-        next_steps TEXT,
-        files_read TEXT,
-        files_edited TEXT,
-        notes TEXT,
-        prompt_number INTEGER,
-        created_at TEXT NOT NULL,
-        created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
-      )
-    `);
+      // Create new table without UNIQUE constraint
+      this.db.run(`
+        CREATE TABLE session_summaries_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          memory_session_id TEXT NOT NULL,
+          project TEXT NOT NULL,
+          request TEXT,
+          investigated TEXT,
+          learned TEXT,
+          completed TEXT,
+          next_steps TEXT,
+          files_read TEXT,
+          files_edited TEXT,
+          notes TEXT,
+          prompt_number INTEGER,
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
+        )
+      `);
 
-    // Copy data from old table
-    this.db.run(`
-      INSERT INTO session_summaries_new
-      SELECT id, memory_session_id, project, request, investigated, learned,
-             completed, next_steps, files_read, files_edited, notes,
-             prompt_number, created_at, created_at_epoch
-      FROM session_summaries
-    `);
+      // Copy data from old table
+      this.db.run(`
+        INSERT INTO session_summaries_new
+        SELECT id, memory_session_id, project, request, investigated, learned,
+               completed, next_steps, files_read, files_edited, notes,
+               prompt_number, created_at, created_at_epoch
+        FROM session_summaries
+      `);
 
-    // Drop old table
-    this.db.run('DROP TABLE session_summaries');
+      // Drop old table
+      this.db.run('DROP TABLE session_summaries');
 
-    // Rename new table
-    this.db.run('ALTER TABLE session_summaries_new RENAME TO session_summaries');
+      // Rename new table
+      this.db.run('ALTER TABLE session_summaries_new RENAME TO session_summaries');
 
-    // Recreate indexes
-    this.db.run(`
-      CREATE INDEX idx_session_summaries_sdk_session ON session_summaries(memory_session_id);
-      CREATE INDEX idx_session_summaries_project ON session_summaries(project);
-      CREATE INDEX idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
-    `);
+      // Recreate indexes
+      this.db.run(`
+        CREATE INDEX idx_session_summaries_sdk_session ON session_summaries(memory_session_id);
+        CREATE INDEX idx_session_summaries_project ON session_summaries(project);
+        CREATE INDEX idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
+      `);
 
-    // Commit transaction
-    this.db.run('COMMIT');
+      // Record migration inside transaction
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(7, new Date().toISOString());
 
-    // Record migration
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(7, new Date().toISOString());
+      // Commit transaction
+      this.db.run('COMMIT');
+    } catch (error) {
+      try { this.db.run('ROLLBACK'); } catch { /* already rolled back */ }
+      throw error;
+    }
 
     logger.debug('DB', 'Successfully removed UNIQUE constraint from session_summaries.memory_session_id');
   }
@@ -330,62 +335,67 @@ export class SessionStore {
 
     logger.debug('DB', 'Making observations.text nullable');
 
-    // Begin transaction
-    this.db.run('BEGIN TRANSACTION');
+    try {
+      // Begin transaction
+      this.db.run('BEGIN TRANSACTION');
 
-    // Clean up leftover temp table from a previously-crashed run
-    this.db.run('DROP TABLE IF EXISTS observations_new');
+      // Clean up leftover temp table from a previously-crashed run
+      this.db.run('DROP TABLE IF EXISTS observations_new');
 
-    // Create new table with text as nullable
-    this.db.run(`
-      CREATE TABLE observations_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        memory_session_id TEXT NOT NULL,
-        project TEXT NOT NULL,
-        text TEXT,
-        type TEXT NOT NULL,
-        title TEXT,
-        subtitle TEXT,
-        facts TEXT,
-        narrative TEXT,
-        concepts TEXT,
-        files_read TEXT,
-        files_modified TEXT,
-        prompt_number INTEGER,
-        created_at TEXT NOT NULL,
-        created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
-      )
-    `);
+      // Create new table with text as nullable
+      this.db.run(`
+        CREATE TABLE observations_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          memory_session_id TEXT NOT NULL,
+          project TEXT NOT NULL,
+          text TEXT,
+          type TEXT NOT NULL,
+          title TEXT,
+          subtitle TEXT,
+          facts TEXT,
+          narrative TEXT,
+          concepts TEXT,
+          files_read TEXT,
+          files_modified TEXT,
+          prompt_number INTEGER,
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
+        )
+      `);
 
-    // Copy data from old table (all existing columns)
-    this.db.run(`
-      INSERT INTO observations_new
-      SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
-             narrative, concepts, files_read, files_modified, prompt_number,
-             created_at, created_at_epoch
-      FROM observations
-    `);
+      // Copy data from old table (all existing columns)
+      this.db.run(`
+        INSERT INTO observations_new
+        SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
+               narrative, concepts, files_read, files_modified, prompt_number,
+               created_at, created_at_epoch
+        FROM observations
+      `);
 
-    // Drop old table
-    this.db.run('DROP TABLE observations');
+      // Drop old table
+      this.db.run('DROP TABLE observations');
 
-    // Rename new table
-    this.db.run('ALTER TABLE observations_new RENAME TO observations');
+      // Rename new table
+      this.db.run('ALTER TABLE observations_new RENAME TO observations');
 
-    // Recreate indexes
-    this.db.run(`
-      CREATE INDEX idx_observations_sdk_session ON observations(memory_session_id);
-      CREATE INDEX idx_observations_project ON observations(project);
-      CREATE INDEX idx_observations_type ON observations(type);
-      CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC);
-    `);
+      // Recreate indexes
+      this.db.run(`
+        CREATE INDEX idx_observations_sdk_session ON observations(memory_session_id);
+        CREATE INDEX idx_observations_project ON observations(project);
+        CREATE INDEX idx_observations_type ON observations(type);
+        CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC);
+      `);
 
-    // Commit transaction
-    this.db.run('COMMIT');
+      // Record migration inside transaction
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(9, new Date().toISOString());
 
-    // Record migration
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(9, new Date().toISOString());
+      // Commit transaction
+      this.db.run('COMMIT');
+    } catch (error) {
+      try { this.db.run('ROLLBACK'); } catch { /* already rolled back */ }
+      throw error;
+    }
 
     logger.debug('DB', 'Successfully made observations.text nullable');
   }

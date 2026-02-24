@@ -718,6 +718,16 @@ export class WorkerService {
         throw error;
       })
       .finally(async () => {
+        // Guard: if session was deleted (by deleteSession/removeSessionImmediate) while
+        // the generator was running, do NOT restart or touch session state — the session
+        // object is stale and restarting would spawn an untracked subprocess.
+        if (!this.sessionManager.getSession(session.sessionDbId)) {
+          logger.debug('SYSTEM', 'Session already deleted, skipping .finally() cleanup', {
+            sessionId: session.sessionDbId
+          });
+          return;
+        }
+
         // CRITICAL: Verify subprocess exit to prevent zombie accumulation (Issue #1168)
         const trackedProcess = getProcessBySession(session.sessionDbId);
         if (trackedProcess && !trackedProcess.process.killed && trackedProcess.process.exitCode === null) {

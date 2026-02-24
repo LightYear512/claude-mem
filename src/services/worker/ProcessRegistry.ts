@@ -294,6 +294,11 @@ export async function reapOrphanedProcesses(activeSessionIds: Set<number>): Prom
   let killed = 0;
 
   // Registry-based: kill processes for dead sessions
+  // Collect orphan PIDs first, then unregister after iteration completes.
+  // unregisterProcess() calls notifySlotAvailable() which can indirectly
+  // mutate processRegistry via waitForSlot → registerProcess, so we must
+  // not call it during iteration.
+  const orphanPids: number[] = [];
   for (const [pid, info] of processRegistry) {
     if (activeSessionIds.has(info.sessionDbId)) continue; // Active = safe
 
@@ -304,6 +309,9 @@ export async function reapOrphanedProcesses(activeSessionIds: Set<number>): Prom
     } catch {
       // Already dead
     }
+    orphanPids.push(pid);
+  }
+  for (const pid of orphanPids) {
     unregisterProcess(pid);
   }
 

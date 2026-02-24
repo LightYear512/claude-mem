@@ -58,6 +58,18 @@ interface StoredSummary {
   created_at_epoch: number;
 }
 
+interface StoredAIAnalysis {
+  id: number;
+  memory_session_id: string;
+  project: string;
+  analysis_text: string;
+  key_insights: string | null;
+  connections: string | null;
+  created_at: string;
+  created_at_epoch: number;
+  discovery_tokens: number;
+}
+
 interface StoredUserPrompt {
   id: number;
   content_session_id: string;
