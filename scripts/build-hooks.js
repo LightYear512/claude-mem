@@ -58,7 +58,10 @@ async function buildHooks() {
       private: true,
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
-      dependencies: {},
+      dependencies: {
+        // Chroma embedding function with native ONNX binaries (can't be bundled)
+        '@chroma-core/default-embed': '^0.1.9'
+      },
       engines: {
         node: '>=18.0.0',
         bun: '>=1.0.0'
@@ -92,7 +95,15 @@ async function buildHooks() {
       outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
       minify: true,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
-      external: ['bun:sqlite'],
+      external: [
+        'bun:sqlite',
+        // Optional chromadb embedding providers
+        'cohere-ai',
+        'ollama',
+        // Default embedding function with native binaries
+        '@chroma-core/default-embed',
+        'onnxruntime-node'
+      ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
@@ -159,6 +170,20 @@ async function buildHooks() {
     fs.chmodSync(chromaMcpDest, 0o755);
     const chromaMcpStats = fs.statSync(chromaMcpDest);
     console.log(`✓ chroma-mcp-server.py copied (${(chromaMcpStats.size / 1024).toFixed(2)} KB)`);
+
+    // Verify critical distribution files exist (skills are source files, not build outputs)
+    console.log('\n📋 Verifying distribution files...');
+    const requiredDistributionFiles = [
+      'plugin/skills/mem-search/SKILL.md',
+      'plugin/hooks/hooks.json',
+      'plugin/.claude-plugin/plugin.json',
+    ];
+    for (const filePath of requiredDistributionFiles) {
+      if (!fs.existsSync(filePath)) {
+        throw new Error(`Missing required distribution file: ${filePath}`);
+      }
+    }
+    console.log('✓ All required distribution files present');
 
     console.log('\n✅ Worker service, MCP server, and context generator built successfully!');
     console.log(`   Output: ${hooksDir}/`);

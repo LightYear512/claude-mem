@@ -12,7 +12,7 @@
  * Fixes #818: Worker fails to start on fresh install
  */
 import { spawnSync, spawn } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -54,6 +54,24 @@ function findBun() {
   return null;
 }
 
+// Early exit if plugin is disabled in Claude Code settings (#781).
+// Sync read + JSON parse — fastest possible check before spawning Bun.
+function isPluginDisabledInClaudeSettings() {
+  try {
+    const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+    const settingsPath = join(configDir, 'settings.json');
+    if (!existsSync(settingsPath)) return false;
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    return settings?.enabledPlugins?.['claude-mem@thedotmack'] === false;
+  } catch {
+    return false;
+  }
+}
+
+if (isPluginDisabledInClaudeSettings()) {
+  process.exit(0);
+}
+
 // Get args: node bun-runner.js <script> [args...]
 const args = process.argv.slice(2);
 
@@ -70,15 +88,55 @@ if (!bunPath) {
   process.exit(1);
 }
 
+// Fix #646: Buffer stdin in Node.js before passing to Bun.
+// On Linux, Bun's libuv calls fstat() on inherited pipe fds and crashes with
+// EINVAL when the pipe comes from Claude Code's hook system. By reading stdin
+// in Node.js first and writing it to a fresh pipe, Bun receives a normal pipe
+// that it can fstat() without errors.
+function collectStdin() {
+  return new Promise((resolve) => {
+    // If stdin is a TTY (interactive), there's no piped data to collect
+    if (process.stdin.isTTY) {
+      resolve(null);
+      return;
+    }
+
+    const chunks = [];
+    process.stdin.on('data', (chunk) => chunks.push(chunk));
+    process.stdin.on('end', () => {
+      resolve(chunks.length > 0 ? Buffer.concat(chunks) : null);
+    });
+    process.stdin.on('error', () => {
+      // stdin may not be readable (e.g. already closed), treat as no data
+      resolve(null);
+    });
+
+    // Safety: if no data arrives within 5s, proceed without stdin
+    setTimeout(() => {
+      process.stdin.removeAllListeners();
+      process.stdin.pause();
+      resolve(chunks.length > 0 ? Buffer.concat(chunks) : null);
+    }, 5000);
+  });
+}
+
+const stdinData = await collectStdin();
+
 // Spawn Bun with the provided script and args
 // Use spawn (not spawnSync) to properly handle stdio
 // Note: Don't use shell mode on Windows - it breaks paths with spaces in usernames
 // Use windowsHide to prevent a visible console window from spawning on Windows
 const child = spawn(bunPath, args, {
-  stdio: 'inherit',
+  stdio: [stdinData ? 'pipe' : 'ignore', 'inherit', 'inherit'],
   windowsHide: true,
   env: process.env
 });
+
+// Write buffered stdin to child's pipe, then close it so the child sees EOF
+if (stdinData && child.stdin) {
+  child.stdin.write(stdinData);
+  child.stdin.end();
+}
 
 child.on('error', (err) => {
   console.error(`Failed to start Bun: ${err.message}`);

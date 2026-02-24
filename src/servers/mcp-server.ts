@@ -238,8 +238,8 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     }
   },
   {
-    name: 'save_memory',
-    description: 'Save a manual memory/observation for semantic search. Use this to remember important information.',
+    name: 'save_observation',
+    description: 'Save an observation to the database. Params: text (required), title, project',
     inputSchema: {
       type: 'object',
       properties: {
@@ -267,7 +267,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
 // Create the MCP server
 const server = new Server(
   {
-    name: 'mcp-search-server',
+    name: 'claude-mem',
     version: packageVersion,
   },
   {
@@ -310,8 +310,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// Cleanup function
-async function cleanup() {
+// Parent heartbeat: self-exit when parent dies (ppid=1 on Unix means orphaned)
+// Prevents orphaned MCP server processes when Claude Code exits unexpectedly
+const HEARTBEAT_INTERVAL_MS = 30_000;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+function startParentHeartbeat() {
+  // ppid-based orphan detection only works on Unix
+  if (process.platform === 'win32') return;
+
+  const initialPpid = process.ppid;
+  heartbeatTimer = setInterval(() => {
+    if (process.ppid === 1 || process.ppid !== initialPpid) {
+      logger.info('SYSTEM', 'Parent process died, self-exiting to prevent orphan', {
+        initialPpid,
+        currentPpid: process.ppid
+      });
+      cleanup();
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+
+  // Don't let the heartbeat timer keep the process alive
+  if (heartbeatTimer.unref) heartbeatTimer.unref();
+}
+
+// Cleanup function — synchronous to ensure consistent behavior whether called
+// from signal handlers, heartbeat interval, or awaited in async context
+function cleanup() {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
   logger.info('SYSTEM', 'MCP server shutting down');
   process.exit(0);
 }
@@ -326,6 +352,9 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   logger.info('SYSTEM', 'Claude-mem search server started');
+
+  // Start parent heartbeat to detect orphaned MCP servers
+  startParentHeartbeat();
 
   // Check Worker availability and auto-start if needed
   // This serves as a fallback when SessionStart hooks don't fire (e.g. after /clear)

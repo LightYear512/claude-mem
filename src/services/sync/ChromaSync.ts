@@ -5,25 +5,17 @@
  * This service provides real-time semantic search capabilities by maintaining
  * a vector database synchronized with SQLite.
  *
+ * Uses ChromaMcpManager to communicate with chroma-mcp over stdio MCP protocol.
+ * The chroma-mcp server handles its own embedding and persistent storage,
+ * eliminating the need for chromadb npm package and ONNX/WASM dependencies.
+ *
  * Design: Fail-fast with no fallbacks - if Chroma is unavailable, syncing fails.
  */
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { ChromaMcpManager } from './ChromaMcpManager.js';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { getCredential } from '../../shared/EnvManager.js';
-import path from 'path';
-import os from 'os';
-import fs from 'fs';
-import { execSync } from 'child_process';
-
-// Version injected at build time by esbuild define
-declare const __DEFAULT_PACKAGE_VERSION__: string;
-const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
 
 interface ChromaDocument {
   id: string;
@@ -77,306 +69,50 @@ interface StoredUserPrompt {
   project: string;
 }
 
-interface StoredAIAnalysis {
-  id: number;
-  memory_session_id: string;
-  project: string;
-  analysis_text: string;
-  key_insights: string | null; // JSON
-  connections: string | null; // JSON
-  created_at: string;
-  created_at_epoch: number;
-  discovery_tokens: number;
-}
-
 export class ChromaSync {
-  private client: Client | null = null;
-  private transport: StdioClientTransport | null = null;
-  private connected: boolean = false;
-  private connectingPromise: Promise<void> | null = null;  // Mutex to prevent concurrent spawns
   private project: string;
   private collectionName: string;
-  private readonly VECTOR_DB_DIR: string;
+  private collectionCreated = false;
   private readonly BATCH_SIZE = 100;
-
-  // Windows popup concern resolved: the worker daemon starts with -WindowStyle Hidden,
-  // so child processes (uvx/chroma-mcp) inherit the hidden console and don't create new windows.
-  // MCP SDK's StdioClientTransport uses shell:false and no detached flag, so console is inherited.
-  private readonly disabled: boolean = false;
 
   constructor(project: string) {
     this.project = project;
-    this.collectionName = `cm__${project}`;
-    this.VECTOR_DB_DIR = path.join(os.homedir(), '.claude-mem', 'vector-db');
+    // Chroma collection names only allow [a-zA-Z0-9._-], 3-512 chars,
+    // must start/end with [a-zA-Z0-9]
+    const sanitized = project
+      .replace(/[^a-zA-Z0-9._-]/g, '_')
+      .replace(/[^a-zA-Z0-9]+$/, '');  // strip trailing non-alphanumeric
+    this.collectionName = `cm__${sanitized || 'unknown'}`;
   }
 
   /**
-   * Get or create combined SSL certificate bundle for Zscaler/corporate proxy environments
-   * Combines standard certifi certificates with enterprise security certificates (e.g., Zscaler)
+   * Ensure collection exists in Chroma via MCP.
+   * chroma_create_collection is idempotent - safe to call multiple times.
+   * Uses collectionCreated flag to avoid redundant calls within a session.
    */
-  private getCombinedCertPath(): string | undefined {
-    const combinedCertPath = path.join(os.homedir(), '.claude-mem', 'combined_certs.pem');
-
-    // If combined certs already exist and are recent (less than 24 hours old), use them
-    if (fs.existsSync(combinedCertPath)) {
-      const stats = fs.statSync(combinedCertPath);
-      const ageMs = Date.now() - stats.mtimeMs;
-      if (ageMs < 24 * 60 * 60 * 1000) {
-        return combinedCertPath;
-      }
-    }
-
-    // Only create on macOS (Zscaler certificate extraction uses macOS security command)
-    if (process.platform !== 'darwin') {
-      return undefined;
-    }
-
-    try {
-      // Use uvx to resolve the correct certifi path for the exact Python environment it uses
-      // This is more reliable than scanning the uv cache directory structure
-      let certifiPath: string | undefined;
-      try {
-        certifiPath = execSync(
-          'uvx --with certifi python -c "import certifi; print(certifi.where())"',
-          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 }
-        ).trim();
-      } catch {
-        // uvx or certifi not available
-        return undefined;
-      }
-
-      if (!certifiPath || !fs.existsSync(certifiPath)) {
-        return undefined;
-      }
-
-      // Try to extract Zscaler certificate from macOS keychain
-      let zscalerCert = '';
-      try {
-        zscalerCert = execSync(
-          'security find-certificate -a -c "Zscaler" -p /Library/Keychains/System.keychain',
-          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000 }
-        );
-      } catch {
-        // Zscaler not found, which is fine - not all environments have it
-        return undefined;
-      }
-
-      // Validate PEM certificate format (must have both BEGIN and END markers)
-      if (!zscalerCert ||
-          !zscalerCert.includes('-----BEGIN CERTIFICATE-----') ||
-          !zscalerCert.includes('-----END CERTIFICATE-----')) {
-        return undefined;
-      }
-
-      // Create combined certificate bundle with atomic write (write to temp, then rename)
-      const certifiContent = fs.readFileSync(certifiPath, 'utf8');
-      const tempPath = combinedCertPath + '.tmp';
-      fs.writeFileSync(tempPath, certifiContent + '\n' + zscalerCert);
-      fs.renameSync(tempPath, combinedCertPath);
-      logger.info('CHROMA_SYNC', 'Created combined SSL certificate bundle for Zscaler', {
-        path: combinedCertPath
-      });
-
-      return combinedCertPath;
-    } catch (error) {
-      logger.debug('CHROMA_SYNC', 'Could not create combined cert bundle', {}, error as Error);
-      return undefined;
-    }
-  }
-
-  /**
-   * Check if Chroma is disabled (Windows)
-   */
-  isDisabled(): boolean {
-    return this.disabled;
-  }
-
-  /**
-   * Ensure MCP client is connected to Chroma server
-   * Uses a promise-based mutex to prevent concurrent calls from spawning
-   * multiple uv/python subprocesses (each ~90MB).
-   * Throws error if connection fails
-   */
-  private async ensureConnection(): Promise<void> {
-    if (this.connected && this.client) {
+  private async ensureCollectionExists(): Promise<void> {
+    if (this.collectionCreated) {
       return;
     }
 
-    // Mutex: if another call is already connecting, wait for it
-    if (this.connectingPromise) {
-      await this.connectingPromise;
-      return;
-    }
-
-    this.connectingPromise = this.doConnect();
+    const chromaMcp = ChromaMcpManager.getInstance();
     try {
-      await this.connectingPromise;
-    } finally {
-      this.connectingPromise = null;
-    }
-  }
-
-  /**
-   * Internal: actually create transport and connect to Chroma MCP server.
-   * Called only once at a time, guarded by ensureConnection() mutex.
-   */
-  private async doConnect(): Promise<void> {
-    logger.info('CHROMA_SYNC', 'Connecting to Chroma MCP server...', { project: this.project });
-
-    try {
-      // Use Python 3.13 by default to avoid onnxruntime compatibility issues with Python 3.14+
-      // See: https://github.com/thedotmack/claude-mem/issues/170 (Python 3.14 incompatibility)
-      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-      const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
-
-      // Get combined SSL certificate bundle for Zscaler/corporate proxy environments
-      const combinedCertPath = this.getCombinedCertPath();
-
-      // Use custom MCP server for configurable embedding functions
-      // Supports: default (all-MiniLM-L6-v2), sentence-transformers/*, dashscope:*
-      const embeddingFunc = settings.CLAUDE_MEM_EMBEDDING_FUNCTION || 'default';
-      const mcpServerPath = path.join(__dirname, 'chroma-mcp-server.py');
-
-      // Build args for custom MCP server
-      const mcpArgs = [
-        'run', '--python', pythonVersion,
-        mcpServerPath,
-        '--data-dir', this.VECTOR_DB_DIR,
-        '--embedding-config', embeddingFunc,
-      ];
-
-      // Add API credentials for remote embedding (e.g., dashscope:text-embedding-v3)
-      if (embeddingFunc.startsWith('dashscope:')) {
-        const apiKey = settings.CLAUDE_MEM_DASHSCOPE_API_KEY || getCredential('DASHSCOPE_API_KEY') || '';
-        if (apiKey) {
-          mcpArgs.push('--api-key', apiKey);
-        }
-      }
-
-      const transportOptions: any = {
-        command: 'uv',
-        args: mcpArgs,
-        stderr: 'ignore'
-      };
-
-      // Add SSL certificate environment variables for corporate proxy/Zscaler environments
-      if (combinedCertPath) {
-        transportOptions.env = {
-          ...process.env,
-          SSL_CERT_FILE: combinedCertPath,
-          REQUESTS_CA_BUNDLE: combinedCertPath,
-          CURL_CA_BUNDLE: combinedCertPath
-        };
-        logger.info('CHROMA_SYNC', 'Using combined SSL certificates for Zscaler compatibility', {
-          certPath: combinedCertPath
-        });
-      }
-
-      // Note: windowsHide is not needed here because the worker daemon starts with
-      // -WindowStyle Hidden, so child processes inherit the hidden console.
-      // The MCP SDK ignores custom windowsHide anyway (overridden internally).
-
-      this.transport = new StdioClientTransport(transportOptions);
-
-      // Empty capabilities object: this client only calls Chroma tools, doesn't expose any
-      this.client = new Client({
-        name: 'claude-mem-chroma-sync',
-        version: packageVersion
-      }, {
-        capabilities: {}
+      await chromaMcp.callTool('chroma_create_collection', {
+        collection_name: this.collectionName
       });
-
-      await this.client.connect(this.transport);
-      this.connected = true;
-
-      logger.info('CHROMA_SYNC', 'Connected to Chroma MCP server', { project: this.project });
     } catch (error) {
-      logger.error('CHROMA_SYNC', 'Failed to connect to Chroma MCP server', { project: this.project }, error as Error);
-      throw new Error(`Chroma connection failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  /**
-   * Ensure collection exists, create if needed
-   * Throws error if collection creation fails
-   */
-  private async ensureCollection(): Promise<void> {
-    await this.ensureConnection();
-
-    if (!this.client) {
-      throw new Error(
-        'Chroma client not initialized. Call ensureConnection() before using client methods.' +
-        ` Project: ${this.project}`
-      );
-    }
-
-    try {
-      // Try to get collection info (will fail if doesn't exist)
-      await this.client.callTool({
-        name: 'chroma_get_collection_info',
-        arguments: {
-          collection_name: this.collectionName
-        }
-      });
-
-      logger.debug('CHROMA_SYNC', 'Collection exists', { collection: this.collectionName });
-    } catch (error) {
-      // Check if this is a connection error - don't try to create collection
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      const isConnectionError =
-        errorMessage.includes('Not connected') ||
-        errorMessage.includes('Connection closed') ||
-        errorMessage.includes('MCP error -32000');
-
-      if (isConnectionError) {
-        // FIX: Close transport to kill subprocess before resetting state
-        // Without this, old chroma-mcp processes leak as zombies
-        if (this.transport) {
-          try {
-            await this.transport.close();
-          } catch (closeErr) {
-            logger.debug('CHROMA_SYNC', 'Transport close error (expected if already dead)', {}, closeErr as Error);
-          }
-        }
-        // Reset connection state so next call attempts reconnect
-        this.connected = false;
-        this.client = null;
-        this.transport = null;
-        logger.error('CHROMA_SYNC', 'Connection lost during collection check',
-          { collection: this.collectionName }, error as Error);
-        throw new Error(`Chroma connection lost: ${errorMessage}`);
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes('already exists')) {
+        throw error;
       }
-
-      // Only attempt creation if it's genuinely a "collection not found" error
-      logger.error('CHROMA_SYNC', 'Collection check failed, attempting to create', { collection: this.collectionName }, error as Error);
-
-      // Load embedding function configuration
-      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-      const embeddingFunc = settings.CLAUDE_MEM_EMBEDDING_FUNCTION || 'default';
-
-      logger.info('CHROMA_SYNC', 'Creating collection with embedding function', {
-        collection: this.collectionName,
-        embeddingFunction: embeddingFunc
-      });
-
-      try {
-        await this.client.callTool({
-          name: 'chroma_create_collection',
-          arguments: {
-            collection_name: this.collectionName,
-            embedding_function_name: embeddingFunc
-          }
-        });
-
-        logger.info('CHROMA_SYNC', 'Collection created', {
-          collection: this.collectionName,
-          embeddingFunction: embeddingFunc
-        });
-      } catch (createError) {
-        logger.error('CHROMA_SYNC', 'Failed to create collection', { collection: this.collectionName }, createError as Error);
-        throw new Error(`Collection creation failed: ${createError instanceof Error ? createError.message : String(createError)}`);
-      }
+      // Collection already exists - this is the expected path after first creation
     }
+
+    this.collectionCreated = true;
+
+    logger.debug('CHROMA_SYNC', 'Collection ready', {
+      collection: this.collectionName
+    });
   }
 
   /**
@@ -515,7 +251,7 @@ export class ChromaSync {
   }
 
   /**
-   * Add documents to Chroma in batch
+   * Add documents to Chroma in batch via MCP
    * Throws error if batch add fails
    */
   private async addDocuments(documents: ChromaDocument[]): Promise<void> {
@@ -523,43 +259,47 @@ export class ChromaSync {
       return;
     }
 
-    await this.ensureCollection();
+    await this.ensureCollectionExists();
 
-    if (!this.client) {
-      throw new Error(
-        'Chroma client not initialized. Call ensureConnection() before using client methods.' +
-        ` Project: ${this.project}`
+    const chromaMcp = ChromaMcpManager.getInstance();
+
+    // Add in batches
+    for (let i = 0; i < documents.length; i += this.BATCH_SIZE) {
+      const batch = documents.slice(i, i + this.BATCH_SIZE);
+
+      // Sanitize metadata: filter out null, undefined, and empty string values
+      // that chroma-mcp may reject (e.g., null subtitle from raw SQLite rows)
+      const cleanMetadatas = batch.map(d =>
+        Object.fromEntries(
+          Object.entries(d.metadata).filter(([_, v]) => v !== null && v !== undefined && v !== '')
+        )
       );
-    }
 
-    try {
-      await this.client.callTool({
-        name: 'chroma_add_documents',
-        arguments: {
+      try {
+        await chromaMcp.callTool('chroma_add_documents', {
           collection_name: this.collectionName,
-          documents: documents.map(d => d.document),
-          ids: documents.map(d => d.id),
-          metadatas: documents.map(d => d.metadata)
-        }
-      });
-
-      logger.debug('CHROMA_SYNC', 'Documents added', {
-        collection: this.collectionName,
-        count: documents.length
-      });
-    } catch (error) {
-      logger.error('CHROMA_SYNC', 'Failed to add documents', {
-        collection: this.collectionName,
-        count: documents.length
-      }, error as Error);
-      throw new Error(`Document add failed: ${error instanceof Error ? error.message : String(error)}`);
+          ids: batch.map(d => d.id),
+          documents: batch.map(d => d.document),
+          metadatas: cleanMetadatas
+        });
+      } catch (error) {
+        logger.error('CHROMA_SYNC', 'Batch add failed, continuing with remaining batches', {
+          collection: this.collectionName,
+          batchStart: i,
+          batchSize: batch.length
+        }, error as Error);
+      }
     }
+
+    logger.debug('CHROMA_SYNC', 'Documents added', {
+      collection: this.collectionName,
+      count: documents.length
+    });
   }
 
   /**
    * Sync a single observation to Chroma
    * Blocks until sync completes, throws on error
-   * No-op on Windows (Chroma disabled to prevent console popups)
    */
   async syncObservation(
     observationId: number,
@@ -570,8 +310,6 @@ export class ChromaSync {
     createdAtEpoch: number,
     discoveryTokens: number = 0
   ): Promise<void> {
-    if (this.disabled) return;
-
     // Convert ParsedObservation to StoredObservation format
     const stored: StoredObservation = {
       id: observationId,
@@ -606,7 +344,6 @@ export class ChromaSync {
   /**
    * Sync a single summary to Chroma
    * Blocks until sync completes, throws on error
-   * No-op on Windows (Chroma disabled to prevent console popups)
    */
   async syncSummary(
     summaryId: number,
@@ -617,8 +354,6 @@ export class ChromaSync {
     createdAtEpoch: number,
     discoveryTokens: number = 0
   ): Promise<void> {
-    if (this.disabled) return;
-
     // Convert ParsedSummary to StoredSummary format
     const stored: StoredSummary = {
       id: summaryId,
@@ -667,55 +402,8 @@ export class ChromaSync {
   }
 
   /**
-   * Format AI analysis into Chroma documents (granular approach)
-   * Main analysis text, plus each insight and connection as separate documents
-   */
-  private formatAIAnalysisDocs(analysis: StoredAIAnalysis): ChromaDocument[] {
-    const documents: ChromaDocument[] = [];
-
-    const keyInsights = analysis.key_insights ? JSON.parse(analysis.key_insights) : [];
-    const connections = analysis.connections ? JSON.parse(analysis.connections) : [];
-
-    const baseMetadata: Record<string, string | number> = {
-      sqlite_id: analysis.id,
-      doc_type: 'ai_analysis',
-      memory_session_id: analysis.memory_session_id,
-      project: analysis.project,
-      created_at_epoch: analysis.created_at_epoch
-    };
-
-    // Main analysis text as primary document
-    documents.push({
-      id: `ai_analysis_${analysis.id}_text`,
-      document: analysis.analysis_text,
-      metadata: { ...baseMetadata, field_type: 'analysis_text' }
-    });
-
-    // Each key insight as separate document
-    keyInsights.forEach((insight: string, index: number) => {
-      documents.push({
-        id: `ai_analysis_${analysis.id}_insight_${index}`,
-        document: insight,
-        metadata: { ...baseMetadata, field_type: 'key_insight', insight_index: index }
-      });
-    });
-
-    // Each connection as separate document
-    connections.forEach((connection: string, index: number) => {
-      documents.push({
-        id: `ai_analysis_${analysis.id}_connection_${index}`,
-        document: connection,
-        metadata: { ...baseMetadata, field_type: 'connection', connection_index: index }
-      });
-    });
-
-    return documents;
-  }
-
-  /**
    * Sync a single user prompt to Chroma
    * Blocks until sync completes, throws on error
-   * No-op on Windows (Chroma disabled to prevent console popups)
    */
   async syncUserPrompt(
     promptId: number,
@@ -725,8 +413,6 @@ export class ChromaSync {
     promptNumber: number,
     createdAtEpoch: number
   ): Promise<void> {
-    if (this.disabled) return;
-
     // Create StoredUserPrompt format
     const stored: StoredUserPrompt = {
       id: promptId,
@@ -750,178 +436,116 @@ export class ChromaSync {
   }
 
   /**
-   * Sync a single AI analysis to Chroma
-   * Blocks until sync completes, throws on error
-   * No-op on Windows (Chroma disabled to prevent console popups)
+   * Fetch all existing document IDs from Chroma collection via MCP
+   * Returns Sets of SQLite IDs for observations, summaries, and prompts
    */
-  async syncAIAnalysis(
-    analysisId: number,
-    memorySessionId: string,
-    project: string,
-    analysisText: string,
-    keyInsights: string[] = [],
-    connections: string[] = [],
-    createdAtEpoch: number,
-    discoveryTokens: number = 0
-  ): Promise<void> {
-    if (this.disabled) return;
-
-    // Create StoredAIAnalysis format
-    const stored: StoredAIAnalysis = {
-      id: analysisId,
-      memory_session_id: memorySessionId,
-      project: project,
-      analysis_text: analysisText,
-      key_insights: keyInsights.length > 0 ? JSON.stringify(keyInsights) : null,
-      connections: connections.length > 0 ? JSON.stringify(connections) : null,
-      created_at: new Date(createdAtEpoch * 1000).toISOString(),
-      created_at_epoch: createdAtEpoch,
-      discovery_tokens: discoveryTokens
-    };
-
-    const documents = this.formatAIAnalysisDocs(stored);
-
-    logger.info('CHROMA_SYNC', 'Syncing AI analysis', {
-      analysisId,
-      documentCount: documents.length,
-      project
-    });
-
-    await this.addDocuments(documents);
-  }
-
-  /**
-   * Fetch all existing document IDs from Chroma collection
-   * Returns Sets of SQLite IDs for observations, summaries, prompts, and AI analyses
-   */
-  private async getExistingChromaIds(): Promise<{
+  private async getExistingChromaIds(projectOverride?: string): Promise<{
     observations: Set<number>;
     summaries: Set<number>;
     prompts: Set<number>;
-    aiAnalyses: Set<number>;
   }> {
-    await this.ensureConnection();
+    const targetProject = projectOverride ?? this.project;
+    await this.ensureCollectionExists();
 
-    if (!this.client) {
-      throw new Error(
-        'Chroma client not initialized. Call ensureConnection() before using client methods.' +
-        ` Project: ${this.project}`
-      );
-    }
+    const chromaMcp = ChromaMcpManager.getInstance();
 
     const observationIds = new Set<number>();
     const summaryIds = new Set<number>();
     const promptIds = new Set<number>();
-    const aiAnalysisIds = new Set<number>();
 
     let offset = 0;
     const limit = 1000; // Large batches, metadata only = fast
 
-    logger.info('CHROMA_SYNC', 'Fetching existing Chroma document IDs (all projects)...');
+    logger.info('CHROMA_SYNC', 'Fetching existing Chroma document IDs...', { project: targetProject });
 
     while (true) {
-      try {
-        const result = await this.client.callTool({
-          name: 'chroma_get_documents',
-          arguments: {
-            collection_name: this.collectionName,
-            limit,
-            offset,
-            include: ['metadatas']
-          }
-        });
+      const result = await chromaMcp.callTool('chroma_get_documents', {
+        collection_name: this.collectionName,
+        limit: limit,
+        offset: offset,
+        where: { project: targetProject },
+        include: ['metadatas']
+      }) as any;
 
-        const data = result.content[0];
-        if (data.type !== 'text') {
-          throw new Error('Unexpected response type from chroma_get_documents');
-        }
+      // chroma_get_documents returns flat arrays: { ids, metadatas, documents }
+      const metadatas = result?.metadatas || [];
 
-        const parsed = JSON.parse(data.text);
-        const metadatas = parsed.metadatas || [];
-
-        if (metadatas.length === 0) {
-          break; // No more documents
-        }
-
-        // Extract SQLite IDs from metadata
-        for (const meta of metadatas) {
-          if (meta.sqlite_id) {
-            if (meta.doc_type === 'observation') {
-              observationIds.add(meta.sqlite_id);
-            } else if (meta.doc_type === 'session_summary') {
-              summaryIds.add(meta.sqlite_id);
-            } else if (meta.doc_type === 'user_prompt') {
-              promptIds.add(meta.sqlite_id);
-            } else if (meta.doc_type === 'ai_analysis') {
-              aiAnalysisIds.add(meta.sqlite_id);
-            }
-          }
-        }
-
-        offset += limit;
-
-        logger.debug('CHROMA_SYNC', 'Fetched batch of existing IDs', {
-          offset,
-          batchSize: metadatas.length
-        });
-      } catch (error) {
-        logger.error('CHROMA_SYNC', 'Failed to fetch existing IDs', {}, error as Error);
-        throw error;
+      if (metadatas.length === 0) {
+        break; // No more documents
       }
+
+      // Extract SQLite IDs from metadata
+      for (const meta of metadatas) {
+        if (meta && meta.sqlite_id) {
+          const sqliteId = meta.sqlite_id as number;
+          if (meta.doc_type === 'observation') {
+            observationIds.add(sqliteId);
+          } else if (meta.doc_type === 'session_summary') {
+            summaryIds.add(sqliteId);
+          } else if (meta.doc_type === 'user_prompt') {
+            promptIds.add(sqliteId);
+          }
+        }
+      }
+
+      offset += limit;
+
+      logger.debug('CHROMA_SYNC', 'Fetched batch of existing IDs', {
+        project: targetProject,
+        offset,
+        batchSize: metadatas.length
+      });
     }
 
     logger.info('CHROMA_SYNC', 'Existing IDs fetched', {
+      project: targetProject,
       observations: observationIds.size,
       summaries: summaryIds.size,
-      prompts: promptIds.size,
-      aiAnalyses: aiAnalysisIds.size
+      prompts: promptIds.size
     });
 
-    return {
-      observations: observationIds,
-      summaries: summaryIds,
-      prompts: promptIds,
-      aiAnalyses: aiAnalysisIds
-    };
+    return { observations: observationIds, summaries: summaryIds, prompts: promptIds };
   }
 
   /**
    * Backfill: Sync all observations missing from Chroma
    * Reads from SQLite and syncs in batches
+   * @param projectOverride - If provided, backfill this project instead of this.project.
+   *   Used by backfillAllProjects() to iterate projects without mutating instance state.
    * Throws error if backfill fails
-   * No-op on Windows (Chroma disabled to prevent console popups)
    */
-  async ensureBackfilled(): Promise<void> {
-    if (this.disabled) return;
+  async ensureBackfilled(projectOverride?: string): Promise<void> {
+    const backfillProject = projectOverride ?? this.project;
+    logger.info('CHROMA_SYNC', 'Starting smart backfill', { project: backfillProject });
 
-    logger.info('CHROMA_SYNC', 'Starting smart backfill (all projects)');
+    await this.ensureCollectionExists();
 
-    await this.ensureCollection();
-
-    // Fetch existing IDs from Chroma (fast, metadata only, all projects)
-    const existing = await this.getExistingChromaIds();
+    // Fetch existing IDs from Chroma (fast, metadata only)
+    const existing = await this.getExistingChromaIds(backfillProject);
 
     const db = new SessionStore();
 
     try {
       // Build exclusion list for observations
-      const existingObsIds = Array.from(existing.observations);
+      // Filter to validated positive integers before interpolating into SQL
+      const existingObsIds = Array.from(existing.observations).filter(id => Number.isInteger(id) && id > 0);
       const obsExclusionClause = existingObsIds.length > 0
-        ? `WHERE id NOT IN (${existingObsIds.join(',')})`
+        ? `AND id NOT IN (${existingObsIds.join(',')})`
         : '';
 
-      // Get all observations missing from Chroma (across all projects)
+      // Get only observations missing from Chroma
       const observations = db.db.prepare(`
         SELECT * FROM observations
-        ${obsExclusionClause}
+        WHERE project = ? ${obsExclusionClause}
         ORDER BY id ASC
-      `).all() as StoredObservation[];
+      `).all(backfillProject) as StoredObservation[];
 
-      const totalObsCount = db.db.prepare(
-        `SELECT COUNT(*) as count FROM observations`
-      ).get() as { count: number };
+      const totalObsCount = db.db.prepare(`
+        SELECT COUNT(*) as count FROM observations WHERE project = ?
+      `).get(backfillProject) as { count: number };
 
       logger.info('CHROMA_SYNC', 'Backfilling observations', {
+        project: backfillProject,
         missing: observations.length,
         existing: existing.observations.size,
         total: totalObsCount.count
@@ -938,29 +562,31 @@ export class ChromaSync {
         const batch = allDocs.slice(i, i + this.BATCH_SIZE);
         await this.addDocuments(batch);
 
-        logger.debug('CHROMA_SYNC', 'Backfill progress (observations)', {
+        logger.debug('CHROMA_SYNC', 'Backfill progress', {
+          project: backfillProject,
           progress: `${Math.min(i + this.BATCH_SIZE, allDocs.length)}/${allDocs.length}`
         });
       }
 
       // Build exclusion list for summaries
-      const existingSummaryIds = Array.from(existing.summaries);
+      const existingSummaryIds = Array.from(existing.summaries).filter(id => Number.isInteger(id) && id > 0);
       const summaryExclusionClause = existingSummaryIds.length > 0
-        ? `WHERE id NOT IN (${existingSummaryIds.join(',')})`
+        ? `AND id NOT IN (${existingSummaryIds.join(',')})`
         : '';
 
-      // Get all summaries missing from Chroma (across all projects)
+      // Get only summaries missing from Chroma
       const summaries = db.db.prepare(`
         SELECT * FROM session_summaries
-        ${summaryExclusionClause}
+        WHERE project = ? ${summaryExclusionClause}
         ORDER BY id ASC
-      `).all() as StoredSummary[];
+      `).all(backfillProject) as StoredSummary[];
 
-      const totalSummaryCount = db.db.prepare(
-        `SELECT COUNT(*) as count FROM session_summaries`
-      ).get() as { count: number };
+      const totalSummaryCount = db.db.prepare(`
+        SELECT COUNT(*) as count FROM session_summaries WHERE project = ?
+      `).get(backfillProject) as { count: number };
 
       logger.info('CHROMA_SYNC', 'Backfilling summaries', {
+        project: backfillProject,
         missing: summaries.length,
         existing: existing.summaries.size,
         total: totalSummaryCount.count
@@ -977,18 +603,19 @@ export class ChromaSync {
         const batch = summaryDocs.slice(i, i + this.BATCH_SIZE);
         await this.addDocuments(batch);
 
-        logger.debug('CHROMA_SYNC', 'Backfill progress (summaries)', {
+        logger.debug('CHROMA_SYNC', 'Backfill progress', {
+          project: backfillProject,
           progress: `${Math.min(i + this.BATCH_SIZE, summaryDocs.length)}/${summaryDocs.length}`
         });
       }
 
       // Build exclusion list for prompts
-      const existingPromptIds = Array.from(existing.prompts);
+      const existingPromptIds = Array.from(existing.prompts).filter(id => Number.isInteger(id) && id > 0);
       const promptExclusionClause = existingPromptIds.length > 0
         ? `AND up.id NOT IN (${existingPromptIds.join(',')})`
         : '';
 
-      // Get all user prompts missing from Chroma (across all projects)
+      // Get only user prompts missing from Chroma
       const prompts = db.db.prepare(`
         SELECT
           up.*,
@@ -996,17 +623,19 @@ export class ChromaSync {
           s.memory_session_id
         FROM user_prompts up
         JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
-        WHERE 1=1 ${promptExclusionClause}
+        WHERE s.project = ? ${promptExclusionClause}
         ORDER BY up.id ASC
-      `).all() as StoredUserPrompt[];
+      `).all(backfillProject) as StoredUserPrompt[];
 
       const totalPromptCount = db.db.prepare(`
         SELECT COUNT(*) as count
         FROM user_prompts up
         JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
-      `).get() as { count: number };
+        WHERE s.project = ?
+      `).get(backfillProject) as { count: number };
 
       logger.info('CHROMA_SYNC', 'Backfilling user prompts', {
+        project: backfillProject,
         missing: prompts.length,
         existing: existing.prompts.size,
         total: totalPromptCount.count
@@ -1023,67 +652,28 @@ export class ChromaSync {
         const batch = promptDocs.slice(i, i + this.BATCH_SIZE);
         await this.addDocuments(batch);
 
-        logger.debug('CHROMA_SYNC', 'Backfill progress (prompts)', {
+        logger.debug('CHROMA_SYNC', 'Backfill progress', {
+          project: backfillProject,
           progress: `${Math.min(i + this.BATCH_SIZE, promptDocs.length)}/${promptDocs.length}`
         });
       }
 
-      // Build exclusion list for AI analyses
-      const existingAnalysisIds = Array.from(existing.aiAnalyses);
-      const analysisExclusionClause = existingAnalysisIds.length > 0
-        ? `WHERE id NOT IN (${existingAnalysisIds.join(',')})`
-        : '';
-
-      // Get all AI analyses missing from Chroma (across all projects)
-      const analyses = db.db.prepare(`
-        SELECT * FROM ai_analysis
-        ${analysisExclusionClause}
-        ORDER BY id ASC
-      `).all() as StoredAIAnalysis[];
-
-      const totalAnalysisCount = db.db.prepare(
-        `SELECT COUNT(*) as count FROM ai_analysis`
-      ).get() as { count: number };
-
-      logger.info('CHROMA_SYNC', 'Backfilling AI analyses', {
-        missing: analyses.length,
-        existing: existing.aiAnalyses.size,
-        total: totalAnalysisCount.count
-      });
-
-      // Format all AI analysis documents
-      const analysisDocs: ChromaDocument[] = [];
-      for (const analysis of analyses) {
-        analysisDocs.push(...this.formatAIAnalysisDocs(analysis));
-      }
-
-      // Sync in batches
-      for (let i = 0; i < analysisDocs.length; i += this.BATCH_SIZE) {
-        const batch = analysisDocs.slice(i, i + this.BATCH_SIZE);
-        await this.addDocuments(batch);
-
-        logger.debug('CHROMA_SYNC', 'Backfill progress (analyses)', {
-          progress: `${Math.min(i + this.BATCH_SIZE, analysisDocs.length)}/${analysisDocs.length}`
-        });
-      }
-
-      logger.info('CHROMA_SYNC', 'Smart backfill complete (all projects)', {
+      logger.info('CHROMA_SYNC', 'Smart backfill complete', {
+        project: backfillProject,
         synced: {
           observationDocs: allDocs.length,
           summaryDocs: summaryDocs.length,
-          promptDocs: promptDocs.length,
-          analysisDocs: analysisDocs.length
+          promptDocs: promptDocs.length
         },
         skipped: {
           observations: existing.observations.size,
           summaries: existing.summaries.size,
-          prompts: existing.prompts.size,
-          aiAnalyses: existing.aiAnalyses.size
+          prompts: existing.prompts.size
         }
       });
 
     } catch (error) {
-      logger.error('CHROMA_SYNC', 'Backfill failed', {}, error as Error);
+      logger.error('CHROMA_SYNC', 'Backfill failed', { project: backfillProject }, error as Error);
       throw new Error(`Backfill failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       db.close();
@@ -1091,166 +681,132 @@ export class ChromaSync {
   }
 
   /**
-   * Query Chroma collection for semantic search
+   * Query Chroma collection for semantic search via MCP
    * Used by SearchManager for vector-based search
-   * Returns empty results on Windows (Chroma disabled to prevent console popups)
    */
   async queryChroma(
     query: string,
     limit: number,
     whereFilter?: Record<string, any>
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
-    if (this.disabled) {
-      return { ids: [], distances: [], metadatas: [] };
-    }
+    await this.ensureCollectionExists();
 
-    await this.ensureConnection();
-
-    if (!this.client) {
-      throw new Error(
-        'Chroma client not initialized. Call ensureConnection() before using client methods.' +
-        ` Project: ${this.project}`
-      );
-    }
-
-    const whereStringified = whereFilter ? JSON.stringify(whereFilter) : undefined;
-
-    const arguments_obj = {
-      collection_name: this.collectionName,
-      query_texts: [query],
-      n_results: limit,
-      include: ['documents', 'metadatas', 'distances'],
-      where: whereStringified
-    };
-
-    let result;
     try {
-      result = await this.client.callTool({
-        name: 'chroma_query_documents',
-        arguments: arguments_obj
-      });
+      const chromaMcp = ChromaMcpManager.getInstance();
+      const results = await chromaMcp.callTool('chroma_query_documents', {
+        collection_name: this.collectionName,
+        query_texts: [query],
+        n_results: limit,
+        ...(whereFilter && { where: whereFilter }),
+        include: ['documents', 'metadatas', 'distances']
+      }) as any;
+
+      // chroma_query_documents returns nested arrays (one per query text)
+      // We always pass a single query text, so we access [0]
+      const ids: number[] = [];
+      const seen = new Set<number>();
+      const docIds = results?.ids?.[0] || [];
+      const rawMetadatas = results?.metadatas?.[0] || [];
+      const rawDistances = results?.distances?.[0] || [];
+
+      // Build deduplicated arrays that stay index-aligned:
+      // Multiple Chroma docs map to the same SQLite ID (one per field).
+      // Keep the first (best-ranked) distance and metadata per SQLite ID.
+      const metadatas: any[] = [];
+      const distances: number[] = [];
+
+      for (let i = 0; i < docIds.length; i++) {
+        const docId = docIds[i];
+        // Extract sqlite_id from document ID (supports three formats):
+        // - obs_{id}_narrative, obs_{id}_fact_0, etc (observations)
+        // - summary_{id}_request, summary_{id}_learned, etc (session summaries)
+        // - prompt_{id} (user prompts)
+        const obsMatch = docId.match(/obs_(\d+)_/);
+        const summaryMatch = docId.match(/summary_(\d+)_/);
+        const promptMatch = docId.match(/prompt_(\d+)/);
+
+        let sqliteId: number | null = null;
+        if (obsMatch) {
+          sqliteId = parseInt(obsMatch[1], 10);
+        } else if (summaryMatch) {
+          sqliteId = parseInt(summaryMatch[1], 10);
+        } else if (promptMatch) {
+          sqliteId = parseInt(promptMatch[1], 10);
+        }
+
+        if (sqliteId !== null && !seen.has(sqliteId)) {
+          seen.add(sqliteId);
+          ids.push(sqliteId);
+          metadatas.push(rawMetadatas[i] ?? null);
+          distances.push(rawDistances[i] ?? 0);
+        }
+      }
+
+      return { ids, distances, metadatas };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
+
+      // Check for connection errors
       const isConnectionError =
-        errorMessage.includes('Not connected') ||
-        errorMessage.includes('Connection closed') ||
-        errorMessage.includes('MCP error -32000');
+        errorMessage.includes('ECONNREFUSED') ||
+        errorMessage.includes('ENOTFOUND') ||
+        errorMessage.includes('fetch failed') ||
+        errorMessage.includes('subprocess closed') ||
+        errorMessage.includes('timed out');
 
       if (isConnectionError) {
-        // FIX: Close transport to kill subprocess before resetting state
-        if (this.transport) {
-          try {
-            await this.transport.close();
-          } catch (closeErr) {
-            logger.debug('CHROMA_SYNC', 'Transport close error (expected if already dead)', {}, closeErr as Error);
-          }
-        }
-        // Reset connection state so next call attempts reconnect
-        this.connected = false;
-        this.client = null;
-        this.transport = null;
+        // Reset collection state so next call attempts reconnect
+        this.collectionCreated = false;
         logger.error('CHROMA_SYNC', 'Connection lost during query',
           { project: this.project, query }, error as Error);
         throw new Error(`Chroma query failed - connection lost: ${errorMessage}`);
       }
+
+      logger.error('CHROMA_SYNC', 'Query failed', { project: this.project, query }, error as Error);
       throw error;
     }
-
-    const resultText = result.content[0]?.text || (() => {
-      logger.error('CHROMA', 'Missing text in MCP chroma_query_documents result', {
-        project: this.project,
-        query_text: query
-      });
-      return '';
-    })();
-
-    // Parse JSON response
-    let parsed: any;
-    try {
-      parsed = JSON.parse(resultText);
-    } catch (error) {
-      logger.error('CHROMA_SYNC', 'Failed to parse Chroma response', { project: this.project }, error as Error);
-      return { ids: [], distances: [], metadatas: [] };
-    }
-
-    // Extract unique IDs from document IDs
-    const ids: number[] = [];
-    const docIds = parsed.ids?.[0] || [];
-    for (const docId of docIds) {
-      // Extract sqlite_id from document ID (supports four formats):
-      // - obs_{id}_narrative, obs_{id}_fact_0, etc (observations)
-      // - summary_{id}_request, summary_{id}_learned, etc (session summaries)
-      // - prompt_{id} (user prompts)
-      // - ai_analysis_{id}_text, ai_analysis_{id}_insight_0, etc (AI analyses)
-      const obsMatch = docId.match(/obs_(\d+)_/);
-      const summaryMatch = docId.match(/summary_(\d+)_/);
-      const promptMatch = docId.match(/prompt_(\d+)/);
-      const analysisMatch = docId.match(/ai_analysis_(\d+)_/);
-
-      let sqliteId: number | null = null;
-      if (obsMatch) {
-        sqliteId = parseInt(obsMatch[1], 10);
-      } else if (summaryMatch) {
-        sqliteId = parseInt(summaryMatch[1], 10);
-      } else if (promptMatch) {
-        sqliteId = parseInt(promptMatch[1], 10);
-      } else if (analysisMatch) {
-        sqliteId = parseInt(analysisMatch[1], 10);
-      }
-
-      if (sqliteId !== null && !ids.includes(sqliteId)) {
-        ids.push(sqliteId);
-      }
-    }
-
-    const distances = parsed.distances?.[0] || [];
-    const metadatas = parsed.metadatas?.[0] || [];
-
-    return { ids, distances, metadatas };
   }
 
   /**
-   * Close the Chroma client connection and cleanup subprocess
+   * Backfill all projects that have observations in SQLite but may be missing from Chroma.
+   * Uses a single shared ChromaSync('claude-mem') instance and Chroma connection.
+   * Per-project scoping is passed as a parameter to ensureBackfilled(), avoiding
+   * instance state mutation. All documents land in the cm__claude-mem collection
+   * with project scoped via metadata, matching how DatabaseManager and SearchManager operate.
+   * Designed to be called fire-and-forget on worker startup.
+   */
+  static async backfillAllProjects(): Promise<void> {
+    const db = new SessionStore();
+    const sync = new ChromaSync('claude-mem');
+    try {
+      const projects = db.db.prepare(
+        'SELECT DISTINCT project FROM observations WHERE project IS NOT NULL AND project != ?'
+      ).all('') as { project: string }[];
+
+      logger.info('CHROMA_SYNC', `Backfill check for ${projects.length} projects`);
+
+      for (const { project } of projects) {
+        try {
+          await sync.ensureBackfilled(project);
+        } catch (error) {
+          logger.error('CHROMA_SYNC', `Backfill failed for project: ${project}`, {}, error as Error);
+          // Continue to next project — don't let one failure stop others
+        }
+      }
+    } finally {
+      await sync.close();
+      db.close();
+    }
+  }
+
+  /**
+   * Close the ChromaSync instance
+   * ChromaMcpManager is a singleton and manages its own lifecycle
+   * We don't close it here - it's closed during graceful shutdown
    */
   async close(): Promise<void> {
-    // Wait for any in-flight connection attempt to settle before tearing down,
-    // otherwise doConnect() can set connected=true on a dead client after we close it.
-    if (this.connectingPromise) {
-      try {
-        await this.connectingPromise;
-      } catch {
-        // Connection failed — that's fine, we're closing anyway
-      }
-    }
-
-    if (!this.connected && !this.client && !this.transport) {
-      return;
-    }
-
-    // Close client first (try/catch to ensure transport.close() always runs)
-    if (this.client) {
-      try {
-        await this.client.close();
-      } catch (err) {
-        logger.debug('CHROMA_SYNC', 'Client close error (expected if already dead)', {}, err as Error);
-      }
-    }
-
-    // Explicitly close transport to kill subprocess
-    if (this.transport) {
-      try {
-        await this.transport.close();
-      } catch (err) {
-        logger.debug('CHROMA_SYNC', 'Transport close error (expected if already dead)', {}, err as Error);
-      }
-    }
-
-    logger.info('CHROMA_SYNC', 'Chroma client and subprocess closed', { project: this.project });
-
-    // Always reset state
-    this.connected = false;
-    this.client = null;
-    this.transport = null;
-    this.connectingPromise = null;
+    // ChromaMcpManager is a singleton and manages its own lifecycle
+    // We don't close it here - it's closed during graceful shutdown
+    logger.info('CHROMA_SYNC', 'ChromaSync closed', { project: this.project });
   }
 }
