@@ -209,18 +209,24 @@ export class DashScopeAgent {
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
           }
 
-          // Process response using shared ResponseProcessor
-          await processAgentResponse(
-            obsResponse.content || '',
-            session,
-            this.dbManager,
-            this.sessionManager,
-            worker,
-            tokensUsed,
-            originalTimestamp,
-            'DashScope',
-            lastCwd
-          );
+          // Process response using shared ResponseProcessor (skip empty responses to preserve messages for stale recovery)
+          if (obsResponse.content) {
+            await processAgentResponse(
+              obsResponse.content,
+              session,
+              this.dbManager,
+              this.sessionManager,
+              worker,
+              tokensUsed,
+              originalTimestamp,
+              'DashScope',
+              lastCwd
+            );
+          } else {
+            logger.warn('SDK', 'Empty DashScope observation response, skipping processing to preserve message', {
+              sessionId: session.sessionDbId
+            });
+          }
 
         } else if (message.type === 'summarize') {
           // CRITICAL: Check memorySessionId BEFORE making expensive LLM call
@@ -253,18 +259,24 @@ export class DashScopeAgent {
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
           }
 
-          // Process response using shared ResponseProcessor
-          await processAgentResponse(
-            summaryResponse.content || '',
-            session,
-            this.dbManager,
-            this.sessionManager,
-            worker,
-            tokensUsed,
-            originalTimestamp,
-            'DashScope',
-            lastCwd
-          );
+          // Process response using shared ResponseProcessor (skip empty responses)
+          if (summaryResponse.content) {
+            await processAgentResponse(
+              summaryResponse.content,
+              session,
+              this.dbManager,
+              this.sessionManager,
+              worker,
+              tokensUsed,
+              originalTimestamp,
+              'DashScope',
+              lastCwd
+            );
+          } else {
+            logger.warn('SDK', 'Empty DashScope summary response, skipping processing', {
+              sessionId: session.sessionDbId
+            });
+          }
         }
       }
 

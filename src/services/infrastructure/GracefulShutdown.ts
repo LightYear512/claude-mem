@@ -66,29 +66,49 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
 
   // STEP 2: Close HTTP server first
   if (config.server) {
-    await closeHttpServer(config.server);
-    logger.info('SYSTEM', 'HTTP server closed');
+    try {
+      await closeHttpServer(config.server);
+      logger.info('SYSTEM', 'HTTP server closed');
+    } catch (error) {
+      logger.error('SYSTEM', 'Failed to close HTTP server', {}, error as Error);
+    }
   }
 
   // STEP 3: Shutdown active sessions
-  await config.sessionManager.shutdownAll();
+  try {
+    await config.sessionManager.shutdownAll();
+  } catch (error) {
+    logger.error('SYSTEM', 'Failed to shutdown sessions', {}, error as Error);
+  }
 
   // STEP 4: Close MCP client connection (signals child to exit gracefully)
   if (config.mcpClient) {
-    await config.mcpClient.close();
-    logger.info('SYSTEM', 'MCP client closed');
+    try {
+      await config.mcpClient.close();
+      logger.info('SYSTEM', 'MCP client closed');
+    } catch (error) {
+      logger.error('SYSTEM', 'Failed to close MCP client', {}, error as Error);
+    }
   }
 
   // STEP 5: Stop Chroma MCP connection
   if (config.chromaMcpManager) {
-    logger.info('SHUTDOWN', 'Stopping Chroma MCP connection...');
-    await config.chromaMcpManager.stop();
-    logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
+    try {
+      logger.info('SHUTDOWN', 'Stopping Chroma MCP connection...');
+      await config.chromaMcpManager.stop();
+      logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
+    } catch (error) {
+      logger.error('SYSTEM', 'Failed to stop Chroma MCP', {}, error as Error);
+    }
   }
 
   // STEP 6: Close database connection (includes ChromaSync cleanup)
   if (config.dbManager) {
-    await config.dbManager.close();
+    try {
+      await config.dbManager.close();
+    } catch (error) {
+      logger.error('SYSTEM', 'Failed to close database', {}, error as Error);
+    }
   }
 
   // STEP 7: Force kill any remaining child processes (Windows zombie port fix)
