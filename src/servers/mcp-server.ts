@@ -27,7 +27,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
+import { getWorkerPort } from '../shared/worker-utils.js';
 import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import path from 'path';
@@ -36,8 +36,9 @@ import path from 'path';
  * Worker HTTP API configuration
  */
 const WORKER_PORT = getWorkerPort();
-const WORKER_HOST = getWorkerHost();
-const WORKER_BASE_URL = `http://${WORKER_HOST}:${WORKER_PORT}`;
+// MCP server always connects to worker via loopback (same machine),
+// regardless of CLAUDE_MEM_WORKER_HOST (which controls server bind address)
+const WORKER_BASE_URL = `http://127.0.0.1:${WORKER_PORT}`;
 
 /**
  * Map tool names to Worker HTTP endpoints

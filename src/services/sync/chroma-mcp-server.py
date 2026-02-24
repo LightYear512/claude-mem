@@ -30,6 +30,7 @@ Supported dimensions: 2048, 1536, 1024 (default), 768, 512, 256, 128, 64
 import argparse
 import json
 import logging
+import os
 import sys
 from typing import Any, Optional
 
@@ -550,10 +551,13 @@ async def main() -> None:
         args.embedding_config,
     )
 
+    # API key: prefer CLI arg, fall back to env var (passed by ChromaSync for security)
+    api_key = args.api_key or os.environ.get("DASHSCOPE_API_KEY", "")
+
     server = build_server(
         data_dir=args.data_dir,
         embedding_config=args.embedding_config,
-        api_key=args.api_key,
+        api_key=api_key,
         api_url=args.api_url,
     )
 

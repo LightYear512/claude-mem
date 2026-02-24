@@ -2672,46 +2672,50 @@ export class SessionStore {
     const timestampEpoch = Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
-    const stmt = this.db.prepare(`
-      INSERT INTO ai_analysis
-      (memory_session_id, project, analysis_text, key_insights, connections,
-       discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const result = stmt.run(
-      memorySessionId,
-      project,
-      analysisText,
-      keyInsights.length > 0 ? JSON.stringify(keyInsights) : null,
-      connections.length > 0 ? JSON.stringify(connections) : null,
-      discoveryTokens,
-      timestampIso,
-      timestampEpoch
-    );
-
-    const analysisId = Number(result.lastInsertRowid);
-
-    // Link observations to this analysis
-    if (observationIds.length > 0) {
-      const updateStmt = this.db.prepare(`
-        UPDATE observations
-        SET ai_analysis_id = ?
-        WHERE id = ?
+    const txResult = this.db.transaction(() => {
+      const stmt = this.db.prepare(`
+        INSERT INTO ai_analysis
+        (memory_session_id, project, analysis_text, key_insights, connections,
+         discovery_tokens, created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
-      for (const obsId of observationIds) {
-        updateStmt.run(analysisId, obsId);
+      const result = stmt.run(
+        memorySessionId,
+        project,
+        analysisText,
+        keyInsights.length > 0 ? JSON.stringify(keyInsights) : null,
+        connections.length > 0 ? JSON.stringify(connections) : null,
+        discoveryTokens,
+        timestampIso,
+        timestampEpoch
+      );
+
+      const analysisId = Number(result.lastInsertRowid);
+
+      // Link observations to this analysis
+      if (observationIds.length > 0) {
+        const updateStmt = this.db.prepare(`
+          UPDATE observations
+          SET ai_analysis_id = ?
+          WHERE id = ?
+        `);
+
+        for (const obsId of observationIds) {
+          updateStmt.run(analysisId, obsId);
+        }
+
+        logger.info('DB', 'Linked observations to AI analysis', {
+          analysisId,
+          observationCount: observationIds.length,
+          project
+        });
       }
 
-      logger.info('DB', 'Linked observations to AI analysis', {
-        analysisId,
-        observationCount: observationIds.length,
-        project
-      });
-    }
+      return { id: analysisId, createdAtEpoch: timestampEpoch };
+    })();
 
-    return { id: analysisId, createdAtEpoch: timestampEpoch };
+    return txResult;
   }
 
   /**

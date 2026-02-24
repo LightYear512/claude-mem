@@ -505,71 +505,76 @@ export class MigrationRunner {
 
     logger.debug('DB', 'Creating ai_analysis table with FTS5 support');
 
-    // Begin transaction
-    this.db.run('BEGIN TRANSACTION');
+    try {
+      // Begin transaction
+      this.db.run('BEGIN TRANSACTION');
 
-    // Create AI analysis table
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS ai_analysis (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        memory_session_id TEXT NOT NULL,
-        project TEXT NOT NULL,
-        analysis_text TEXT NOT NULL,
-        key_insights TEXT,
-        connections TEXT,
-        created_at TEXT NOT NULL,
-        created_at_epoch INTEGER NOT NULL,
-        discovery_tokens INTEGER DEFAULT 0,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
-      );
+      // Create AI analysis table
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS ai_analysis (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          memory_session_id TEXT NOT NULL,
+          project TEXT NOT NULL,
+          analysis_text TEXT NOT NULL,
+          key_insights TEXT,
+          connections TEXT,
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          discovery_tokens INTEGER DEFAULT 0,
+          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
+        );
 
-      CREATE INDEX IF NOT EXISTS idx_ai_analysis_session ON ai_analysis(memory_session_id);
-      CREATE INDEX IF NOT EXISTS idx_ai_analysis_project ON ai_analysis(project);
-      CREATE INDEX IF NOT EXISTS idx_ai_analysis_created ON ai_analysis(created_at_epoch DESC);
-    `);
+        CREATE INDEX IF NOT EXISTS idx_ai_analysis_session ON ai_analysis(memory_session_id);
+        CREATE INDEX IF NOT EXISTS idx_ai_analysis_project ON ai_analysis(project);
+        CREATE INDEX IF NOT EXISTS idx_ai_analysis_created ON ai_analysis(created_at_epoch DESC);
+      `);
 
-    // Add ai_analysis_id foreign key to observations table
-    const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-    const hasAIAnalysisId = observationsInfo.some(col => col.name === 'ai_analysis_id');
+      // Add ai_analysis_id foreign key to observations table
+      const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+      const hasAIAnalysisId = observationsInfo.some(col => col.name === 'ai_analysis_id');
 
-    if (!hasAIAnalysisId) {
-      this.db.run(`ALTER TABLE observations ADD COLUMN ai_analysis_id INTEGER REFERENCES ai_analysis(id) ON DELETE SET NULL`);
-      this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_ai_analysis ON observations(ai_analysis_id)`);
+      if (!hasAIAnalysisId) {
+        this.db.run(`ALTER TABLE observations ADD COLUMN ai_analysis_id INTEGER REFERENCES ai_analysis(id) ON DELETE SET NULL`);
+        this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_ai_analysis ON observations(ai_analysis_id)`);
+      }
+
+      // Create FTS5 virtual table for ai_analysis
+      this.db.run(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS ai_analysis_fts USING fts5(
+          analysis_text,
+          key_insights,
+          connections,
+          content='ai_analysis',
+          content_rowid='id'
+        );
+      `);
+
+      // Triggers to keep ai_analysis_fts in sync
+      this.db.run(`
+        CREATE TRIGGER IF NOT EXISTS ai_analysis_ai AFTER INSERT ON ai_analysis BEGIN
+          INSERT INTO ai_analysis_fts(rowid, analysis_text, key_insights, connections)
+          VALUES (new.id, new.analysis_text, new.key_insights, new.connections);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS ai_analysis_ad AFTER DELETE ON ai_analysis BEGIN
+          INSERT INTO ai_analysis_fts(ai_analysis_fts, rowid, analysis_text, key_insights, connections)
+          VALUES('delete', old.id, old.analysis_text, old.key_insights, old.connections);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS ai_analysis_au AFTER UPDATE ON ai_analysis BEGIN
+          INSERT INTO ai_analysis_fts(ai_analysis_fts, rowid, analysis_text, key_insights, connections)
+          VALUES('delete', old.id, old.analysis_text, old.key_insights, old.connections);
+          INSERT INTO ai_analysis_fts(rowid, analysis_text, key_insights, connections)
+          VALUES (new.id, new.analysis_text, new.key_insights, new.connections);
+        END;
+      `);
+
+      // Commit transaction
+      this.db.run('COMMIT');
+    } catch (error) {
+      try { this.db.run('ROLLBACK'); } catch { /* already rolled back */ }
+      throw error;
     }
-
-    // Create FTS5 virtual table for ai_analysis
-    this.db.run(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS ai_analysis_fts USING fts5(
-        analysis_text,
-        key_insights,
-        connections,
-        content='ai_analysis',
-        content_rowid='id'
-      );
-    `);
-
-    // Triggers to keep ai_analysis_fts in sync
-    this.db.run(`
-      CREATE TRIGGER IF NOT EXISTS ai_analysis_ai AFTER INSERT ON ai_analysis BEGIN
-        INSERT INTO ai_analysis_fts(rowid, analysis_text, key_insights, connections)
-        VALUES (new.id, new.analysis_text, new.key_insights, new.connections);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS ai_analysis_ad AFTER DELETE ON ai_analysis BEGIN
-        INSERT INTO ai_analysis_fts(ai_analysis_fts, rowid, analysis_text, key_insights, connections)
-        VALUES('delete', old.id, old.analysis_text, old.key_insights, old.connections);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS ai_analysis_au AFTER UPDATE ON ai_analysis BEGIN
-        INSERT INTO ai_analysis_fts(ai_analysis_fts, rowid, analysis_text, key_insights, connections)
-        VALUES('delete', old.id, old.analysis_text, old.key_insights, old.connections);
-        INSERT INTO ai_analysis_fts(rowid, analysis_text, key_insights, connections)
-        VALUES (new.id, new.analysis_text, new.key_insights, new.connections);
-      END;
-    `);
-
-    // Commit transaction
-    this.db.run('COMMIT');
 
     // Record migration
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(12, new Date().toISOString());
@@ -969,8 +974,10 @@ export class MigrationRunner {
 
     logger.debug('DB', 'Creating budget tracking tables');
 
-    this.db.run('BEGIN TRANSACTION');
     try {
+      // Begin transaction
+      this.db.run('BEGIN TRANSACTION');
+
       // budget_state table - single-row global state with optimistic lock
       this.db.run(`
         CREATE TABLE IF NOT EXISTS budget_state (
@@ -1059,9 +1066,10 @@ export class MigrationRunner {
       // Record migration inside transaction
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
 
+      // Commit transaction
       this.db.run('COMMIT');
     } catch (error) {
-      this.db.run('ROLLBACK');
+      try { this.db.run('ROLLBACK'); } catch { /* already rolled back */ }
       throw error;
     }
 

@@ -332,10 +332,23 @@ npm run worker:logs
 
 **关键设置:**
 - `workerPort` - HTTP API 端口(默认 37777)
+- `CLAUDE_MEM_WORKER_HOST` - Worker 绑定地址(默认 `127.0.0.1`)。WSL2/Docker 用户如需从外部访问,可设为 `0.0.0.0`
 - `dataDir` - 数据目录(默认 `~/.claude-mem`)
 - `logLevel` - 日志级别(DEBUG, INFO, WARN, ERROR)
 - `contextConfig` - 上下文注入设置
 - `CLAUDE_MEM_EMBEDDING_FUNCTION` - Embedding 模型配置(默认 'default')
+
+### 修改设置后重启 Worker
+
+修改 `~/.claude-mem/settings.json` 后,需要重启 worker 使设置生效:
+
+```bash
+# 方式 1: 通过 HTTP API 关闭(推荐,下次 Claude Code 交互时自动重启)
+curl -X POST http://127.0.0.1:37777/api/admin/shutdown
+
+# 方式 2: 开发环境中使用 npm 命令
+npm run worker:restart
+```
 
 ### Embedding 模型配置
 

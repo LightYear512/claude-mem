@@ -402,6 +402,62 @@ export class ChromaSync {
   }
 
   /**
+   * Format AI analysis into Chroma documents (granular approach)
+   * Main analysis text, plus each insight and connection as separate documents
+   */
+  private formatAIAnalysisDocs(analysis: StoredAIAnalysis): ChromaDocument[] {
+    const documents: ChromaDocument[] = [];
+
+    let keyInsights: string[] = [];
+    let connections: string[] = [];
+    try {
+      keyInsights = analysis.key_insights ? JSON.parse(analysis.key_insights) : [];
+    } catch {
+      logger.warn('CHROMA_SYNC', 'Invalid JSON in key_insights, skipping', { id: analysis.id });
+    }
+    try {
+      connections = analysis.connections ? JSON.parse(analysis.connections) : [];
+    } catch {
+      logger.warn('CHROMA_SYNC', 'Invalid JSON in connections, skipping', { id: analysis.id });
+    }
+
+    const baseMetadata: Record<string, string | number> = {
+      sqlite_id: analysis.id,
+      doc_type: 'ai_analysis',
+      memory_session_id: analysis.memory_session_id,
+      project: analysis.project,
+      created_at_epoch: analysis.created_at_epoch
+    };
+
+    // Main analysis text as primary document
+    documents.push({
+      id: `ai_analysis_${analysis.id}_text`,
+      document: analysis.analysis_text,
+      metadata: { ...baseMetadata, field_type: 'analysis_text' }
+    });
+
+    // Each key insight as separate document
+    keyInsights.forEach((insight: string, index: number) => {
+      documents.push({
+        id: `ai_analysis_${analysis.id}_insight_${index}`,
+        document: insight,
+        metadata: { ...baseMetadata, field_type: 'key_insight', insight_index: index }
+      });
+    });
+
+    // Each connection as separate document
+    connections.forEach((connection: string, index: number) => {
+      documents.push({
+        id: `ai_analysis_${analysis.id}_connection_${index}`,
+        document: connection,
+        metadata: { ...baseMetadata, field_type: 'connection', connection_index: index }
+      });
+    });
+
+    return documents;
+  }
+
+  /**
    * Sync a single user prompt to Chroma
    * Blocks until sync completes, throws on error
    */
@@ -436,8 +492,46 @@ export class ChromaSync {
   }
 
   /**
+   * Sync a single AI analysis to Chroma
+   * Blocks until sync completes, throws on error
+   */
+  async syncAIAnalysis(
+    analysisId: number,
+    memorySessionId: string,
+    project: string,
+    analysisText: string,
+    keyInsights: string[] = [],
+    connections: string[] = [],
+    createdAtEpoch: number,
+    discoveryTokens: number = 0
+  ): Promise<void> {
+    // Create StoredAIAnalysis format
+    const stored: StoredAIAnalysis = {
+      id: analysisId,
+      memory_session_id: memorySessionId,
+      project: project,
+      analysis_text: analysisText,
+      key_insights: keyInsights.length > 0 ? JSON.stringify(keyInsights) : null,
+      connections: connections.length > 0 ? JSON.stringify(connections) : null,
+      created_at: new Date(createdAtEpoch).toISOString(),
+      created_at_epoch: createdAtEpoch,
+      discovery_tokens: discoveryTokens
+    };
+
+    const documents = this.formatAIAnalysisDocs(stored);
+
+    logger.info('CHROMA_SYNC', 'Syncing AI analysis', {
+      analysisId,
+      documentCount: documents.length,
+      project
+    });
+
+    await this.addDocuments(documents);
+  }
+
+  /**
    * Fetch all existing document IDs from Chroma collection via MCP
-   * Returns Sets of SQLite IDs for observations, summaries, and prompts
+   * Returns Sets of SQLite IDs for observations, summaries, prompts, and AI analyses
    */
   private async getExistingChromaIds(projectOverride?: string): Promise<{
     observations: Set<number>;

@@ -371,8 +371,12 @@ export class DashScopeAgent {
     sessionDbId?: number,
     signal?: AbortSignal
   ): Promise<{ content: string; tokensUsed?: number }> {
-    // Truncate history to prevent runaway costs
+    // Truncate history to prevent runaway costs and unbounded memory growth
     const truncatedHistory = this.truncateHistory(history);
+    if (truncatedHistory.length < history.length) {
+      history.length = 0;
+      history.push(...truncatedHistory);
+    }
     const messages = this.conversationToOpenAIMessages(truncatedHistory);
     const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
     const estimatedTokens = this.estimateTokens(truncatedHistory.map(m => m.content).join(''));
@@ -423,7 +427,7 @@ export class DashScopeAgent {
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
+        const errorText = (await response.text()).slice(0, 1000);
         throw new Error(`DashScope API error: ${response.status} - ${errorText}`);
       }
 

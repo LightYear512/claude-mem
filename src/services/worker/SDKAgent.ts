@@ -376,8 +376,6 @@ export class SDKAgent {
       totalCostUsd: sessionTotalCostUsd.toFixed(6)
     });
 
-    } catch (error) {
-      throw error;
     } finally {
       // Rollback any unsettled budget reservation (covers throw, abort, and early return paths)
       if (sessionTxId && this.budgetController) {

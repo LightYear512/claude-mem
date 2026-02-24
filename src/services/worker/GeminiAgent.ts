@@ -486,8 +486,8 @@ export class GeminiAgent {
     // This prevents Issue #733 where random project .env files could interfere
     const apiKey = settings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY') || '';
 
-    // API URL: check settings first, then environment variable, then default
-    const apiUrl = settings.CLAUDE_MEM_GEMINI_API_URL || process.env.GEMINI_API_URL || DEFAULT_GEMINI_API_URL;
+    // API URL: check settings only (NOT process.env to prevent .env pollution - Issue #733)
+    const apiUrl = settings.CLAUDE_MEM_GEMINI_API_URL || DEFAULT_GEMINI_API_URL;
 
     // Model: from settings or default, with validation (skip validation for custom API URLs)
     const defaultModel: GeminiModel = 'gemini-2.5-flash';

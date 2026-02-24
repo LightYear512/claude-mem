@@ -30,11 +30,18 @@ export class BudgetRoutes extends BaseRouteHandler {
   });
 
   private handleGetHistory = this.wrapHandler((req: Request, res: Response): void => {
-    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
-    const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : undefined;
+    const rawLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+    const limit = rawLimit !== undefined && !isNaN(rawLimit) && rawLimit >= 0 ? rawLimit : undefined;
+    const rawOffset = req.query.offset ? parseInt(req.query.offset as string, 10) : undefined;
+    const offset = rawOffset !== undefined && !isNaN(rawOffset) && rawOffset >= 0 ? rawOffset : undefined;
     const dateFrom = req.query.dateFrom as string | undefined;
     const dateTo = req.query.dateTo as string | undefined;
 
-    res.json(this.budgetController.getHistory({ limit, offset, dateFrom, dateTo }));
+    // Validate date format (YYYY-MM-DD)
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+    const validDateFrom = dateFrom && datePattern.test(dateFrom) ? dateFrom : undefined;
+    const validDateTo = dateTo && datePattern.test(dateTo) ? dateTo : undefined;
+
+    res.json(this.budgetController.getHistory({ limit, offset, dateFrom: validDateFrom, dateTo: validDateTo }));
   });
 }

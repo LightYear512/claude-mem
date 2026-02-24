@@ -201,8 +201,9 @@ export class WorkerService {
   // Orphan reaper cleanup function (Issue #737)
   private stopOrphanReaper: (() => void) | null = null;
 
-  // Vector backfill promise for tracking during shutdown
+  // Vector backfill promise and timer for tracking during shutdown
   private backfillPromise: Promise<void> | null = null;
+  private backfillTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Prevent concurrent fallback execution for the same session
   private fallbackInProgress = new Set<number>();
@@ -549,12 +550,16 @@ export class WorkerService {
       const BACKFILL_TIMEOUT_MS = 300_000; // 5 minutes
       this.backfillPromise = Promise.race([
         this.dbManager.getChromaSync().ensureBackfilled(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Vector backfill timeout')), BACKFILL_TIMEOUT_MS)
-        )
+        new Promise<never>((_, reject) => {
+          this.backfillTimer = setTimeout(() => reject(new Error('Vector backfill timeout')), BACKFILL_TIMEOUT_MS);
+        })
       ]).catch((error) => {
         logger.warn('CHROMA', 'Vector backfill failed (non-fatal)', {}, error as Error);
       }).finally(() => {
+        if (this.backfillTimer) {
+          clearTimeout(this.backfillTimer);
+          this.backfillTimer = null;
+        }
         this.backfillPromise = null;
       });
 
@@ -824,7 +829,7 @@ export class WorkerService {
 
     // Prevent concurrent fallback execution for the same session
     if (this.fallbackInProgress.has(sessionDbId)) {
-      logger.debug('SDK', 'Fallback already in progress, skipping', { sessionId: sessionDbId });
+      logger.warn('SDK', 'Fallback already in progress for session, skipping duplicate attempt', { sessionId: sessionDbId });
       return;
     }
     this.fallbackInProgress.add(sessionDbId);
