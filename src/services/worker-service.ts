@@ -1175,7 +1175,9 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
     logger.warn('SYSTEM', 'Worker is alive but readiness timed out — proceeding anyway');
   }
 
-  clearWorkerSpawnAttempted();
+  // Note: spawn lock is intentionally NOT cleared on success.
+  // The cooldown protects against concurrent hooks racing to spawn.
+  // Only explicit stop/restart commands clear the throttle.
   // Touch PID file to signal other sessions that a restart just completed.
   touchPidFile();
   logger.info('SYSTEM', 'Worker started successfully');
