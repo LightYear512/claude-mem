@@ -3,12 +3,12 @@ import type { TranslationDict } from './types';
 export const zhCN: TranslationDict = {
   // Header
   'header.documentation': '文档',
-  'header.followX': '关注我们的 X',
+  'header.followX': '在 X 上关注我们',
   'header.discord': '加入 Discord 社区',
   'header.allProjects': '所有项目',
   'header.settings': '设置',
   'header.shutdown': '关闭 Worker',
-  'header.shutdownConfirm': '确定关闭 Worker？',
+  'header.shutdownConfirm': '确定要关闭 Worker 吗？',
   'header.shutdownMsg': '这将停止 Worker 服务。在下次 Claude Code 会话启动前，记忆捕获将暂停。',
   'header.cancel': '取消',
   'header.shutdownBtn': '关闭',
@@ -21,7 +21,7 @@ export const zhCN: TranslationDict = {
   'feed.noMoreItems': '没有更多了',
 
   // Summary Card
-  'summary.investigated': '调查了',
+  'summary.investigated': '探索了',
   'summary.learned': '学到了',
   'summary.completed': '完成了',
   'summary.nextSteps': '下一步',
@@ -90,7 +90,7 @@ export const zhCN: TranslationDict = {
   'settings.errorPreview': '加载预览失败: {error}',
 
   // Settings: Loading section
-  'settings.loading': '加载量',
+  'settings.loading': '注入量',
   'settings.loadingDesc': '注入多少观察记录',
   'settings.observations': '观察记录数',
   'settings.observationsTooltip': '上下文中包含的最近观察记录数 (1-200)',
@@ -113,12 +113,12 @@ export const zhCN: TranslationDict = {
   'settings.fieldTooltip': '完整观察展开哪个字段',
   'settings.narrative': '叙述',
   'settings.factsOption': '事实',
-  'settings.tokenEconomics': 'Token 经济',
-  'settings.readCost': '阅读成本',
-  'settings.readCostDesc': '阅读此观察所需的 token 数',
-  'settings.workInvestment': '工作投入',
+  'settings.tokenEconomics': 'Token 用量',
+  'settings.readCost': '读取成本',
+  'settings.readCostDesc': '读取此观察所需的 token 数',
+  'settings.workInvestment': '生成消耗',
   'settings.workInvestmentDesc': '创建此观察所花费的 token 数',
-  'settings.savings': '节省',
+  'settings.savings': '节省开销',
   'settings.savingsDesc': '通过复用上下文节省的总 token 数',
 
   // Settings: Advanced section
@@ -140,7 +140,7 @@ export const zhCN: TranslationDict = {
   'settings.geminiModel': 'Gemini 模型',
   'settings.geminiModelTooltip': 'Gemini API 模型 ID。例如: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-3-flash',
   'settings.geminiRateLimiting': '速率限制',
-  'settings.geminiRateLimitingDesc': '免费层级启用 (10-30 RPM)。已设置计费则禁用 (1000+ RPM)。',
+  'settings.geminiRateLimitingDesc': '免费套餐下建议启用 (10-30 RPM)。已开通付费则可禁用 (1000+ RPM)。',
   'settings.openrouterApiKey': 'OpenRouter API 密钥',
   'settings.openrouterApiKeyTooltip': '你的 OpenRouter API 密钥，来自 openrouter.ai (或设置 OPENROUTER_API_KEY 环境变量)',
   'settings.openrouterApiKeyPlaceholder': '输入 OpenRouter API 密钥...',
@@ -192,9 +192,9 @@ export const zhCN: TranslationDict = {
 
   // Settings: Budget section
   'settings.budget': '预算',
-  'settings.budgetDesc': '成本跟踪和限制',
+  'settings.budgetDesc': '费用追踪与额度限制',
   'settings.enableBudget': '启用预算跟踪',
-  'settings.enableBudgetDesc': '跟踪 AI 成本并强制执行每日/每月限制',
+  'settings.enableBudgetDesc': '追踪 AI 费用并执行每日/每月额度限制',
   'settings.pricingPreset': '定价方案',
   'settings.pricingPresetTooltip': '选择你的定价模型。选择「自定义」手动输入价格。',
   'settings.dailyBudget': '每日预算 ($)',
