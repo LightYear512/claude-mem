@@ -26,7 +26,8 @@ function findBun() {
   const pathCheck = spawnSync(IS_WINDOWS ? 'where' : 'which', ['bun'], {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
-    shell: IS_WINDOWS
+    shell: IS_WINDOWS,
+    windowsHide: true
   });
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {

@@ -35,6 +35,7 @@ export class ChromaMcpManager {
   private connected: boolean = false;
   private lastConnectionFailureTimestamp: number = 0;
   private connecting: Promise<void> | null = null;
+  private stopped: boolean = false;
 
   private constructor() {}
 
@@ -54,6 +55,12 @@ export class ChromaMcpManager {
    * If the subprocess has died since the last use, reconnects transparently.
    */
   private async ensureConnected(): Promise<void> {
+    // Reject all connections after stop() to prevent fire-and-forget tasks
+    // (e.g., backfillAllProjects) from respawning the subprocess during shutdown.
+    if (this.stopped) {
+      throw new Error('ChromaMcpManager has been stopped');
+    }
+
     if (this.connected && this.client) {
       return;
     }
@@ -116,6 +123,28 @@ export class ChromaMcpManager {
       args: uvxSpawnArgs.join(' ')
     });
 
+    // Windows: MCP SDK's StdioClientTransport only sets windowsHide for Electron
+    // (via isElectron() check), not for Bun/Node.js. Without windowsHide, spawning
+    // cmd.exe creates a persistent visible console window. Temporarily patch
+    // child_process.spawn to inject windowsHide: true before the MCP SDK spawns
+    // the subprocess. In the esbuild CJS bundle, both our code and the inlined
+    // MCP SDK reference the same require('child_process') module object, so
+    // property-level patching affects the SDK's spawn calls.
+    // Use runtime require() instead of ESM namespace to get a mutable module reference.
+    const cp = typeof globalThis.require === 'function'
+      ? globalThis.require('child_process')
+      : require('child_process');
+    const origSpawn = cp.spawn;
+    if (isWindows) {
+      cp.spawn = function patchedSpawn(
+        command: string,
+        args: readonly string[],
+        options: any
+      ) {
+        return origSpawn.call(cp, command, args, { ...options, windowsHide: true });
+      };
+    }
+
     this.transport = new StdioClientTransport({
       command: uvxSpawnCommand,
       args: uvxSpawnArgs,
@@ -129,6 +158,11 @@ export class ChromaMcpManager {
     );
 
     const mcpConnectionPromise = this.client.connect(this.transport);
+    // Restore original spawn — the subprocess was already created synchronously
+    // within connect() before any async operations.
+    if (isWindows) {
+      cp.spawn = origSpawn;
+    }
     let timeoutId: ReturnType<typeof setTimeout>;
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeoutId = setTimeout(
@@ -322,11 +356,25 @@ export class ChromaMcpManager {
    *
    * Close transport first (kills subprocess via SIGTERM) before client
    * to avoid hanging on a stuck process - mirrors connectInternal() cleanup.
+   *
+   * Sets stopped flag to prevent fire-and-forget tasks (backfillAllProjects)
+   * from respawning the subprocess between stop() and process.exit().
    */
   async stop(): Promise<void> {
-    // Wait for any in-progress connection attempt to settle before tearing down
+    // Prevent any future reconnections (must be set before any await)
+    this.stopped = true;
+
+    // If a connection attempt is in progress, wait briefly for the transport
+    // to be created so we can kill its subprocess. Don't wait for the full
+    // 30s connection timeout — the 10s shutdown force-exit timer would fire
+    // first, calling process.exit() and orphaning the subprocess.
     if (this.connecting) {
-      try { await this.connecting; } catch { /* ignore - we're stopping anyway */ }
+      try {
+        await Promise.race([
+          this.connecting,
+          new Promise<void>(resolve => setTimeout(resolve, 2000))
+        ]);
+      } catch { /* ignore - we're stopping anyway */ }
     }
 
     if (!this.client && !this.transport) {
@@ -335,6 +383,15 @@ export class ChromaMcpManager {
     }
 
     logger.info('CHROMA_MCP', 'Stopping chroma-mcp MCP connection');
+
+    // Capture subprocess PID and find its children BEFORE transport.close().
+    // transport.close() escalates stdin-close → SIGTERM → SIGKILL on the
+    // direct child (e.g., uvx). On platforms where uvx doesn't exec() into
+    // Python, the grandchild (actual chroma-mcp) survives as an orphan.
+    const subprocessPid = this.transport?.pid ?? null;
+    const childPids = (subprocessPid != null && process.platform !== 'win32')
+      ? this.findChildPids(subprocessPid)
+      : [];
 
     // Close transport first (kills subprocess via SIGTERM) before client
     // to avoid hanging on a stuck process.
@@ -345,12 +402,46 @@ export class ChromaMcpManager {
       try { await this.client.close(); } catch { /* already dead */ }
     }
 
+    // Kill any surviving grandchildren (e.g., Python chroma-mcp when uvx
+    // spawned it as a subprocess instead of exec'ing into it).
+    for (const pid of childPids) {
+      try {
+        process.kill(pid, 'SIGKILL');
+        logger.debug('CHROMA_MCP', 'Killed surviving child process', { pid });
+      } catch { /* already dead */ }
+    }
+
     this.client = null;
     this.transport = null;
     this.connected = false;
     this.connecting = null;
 
     logger.info('CHROMA_MCP', 'chroma-mcp MCP connection stopped');
+  }
+
+  /**
+   * Find direct child PIDs of a given parent PID (Unix only).
+   * Used to identify grandchild processes (e.g., Python chroma-mcp) that
+   * transport.close() won't kill because SIGKILL doesn't propagate to children.
+   */
+  private findChildPids(parentPid: number): number[] {
+    // SECURITY: Validate PID is a positive integer to prevent command injection
+    if (!Number.isInteger(parentPid) || parentPid <= 0) return [];
+
+    try {
+      const stdout = execSync(`pgrep -P ${parentPid}`, {
+        encoding: 'utf8',
+        timeout: 2000,
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+      return stdout.trim().split('\n')
+        .filter(line => line.trim().length > 0 && /^\d+$/.test(line.trim()))
+        .map(line => parseInt(line.trim(), 10))
+        .filter(pid => pid > 0);
+    } catch {
+      // pgrep exits 1 when no matches — not an error
+      return [];
+    }
   }
 
   /**
