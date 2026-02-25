@@ -542,7 +542,15 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     // Validate CLAUDE_MEM_EMBEDDING_FUNCTION
     if (settings.CLAUDE_MEM_EMBEDDING_FUNCTION) {
-      if (!VALID_EMBEDDING_MODELS.includes(settings.CLAUDE_MEM_EMBEDDING_FUNCTION)) {
+      // Strip optional dimension suffix for dashscope models (e.g. 'dashscope:text-embedding-v3:768' → 'dashscope:text-embedding-v3')
+      let modelToValidate = settings.CLAUDE_MEM_EMBEDDING_FUNCTION;
+      if (modelToValidate.startsWith('dashscope:')) {
+        const parts = modelToValidate.split(':');
+        if (parts.length >= 3 && /^\d+$/.test(parts[2])) {
+          modelToValidate = `${parts[0]}:${parts[1]}`;
+        }
+      }
+      if (!VALID_EMBEDDING_MODELS.includes(modelToValidate)) {
         return { valid: false, error: `CLAUDE_MEM_EMBEDDING_FUNCTION must be one of: ${VALID_EMBEDDING_MODELS.join(', ')}` };
       }
     }
