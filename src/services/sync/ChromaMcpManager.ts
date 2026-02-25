@@ -319,7 +319,9 @@ export class ChromaMcpManager {
 
   /**
    * Gracefully stop the MCP connection and kill the chroma-mcp subprocess.
-   * client.close() sends stdin close -> SIGTERM -> SIGKILL to the subprocess.
+   *
+   * Close transport first (kills subprocess via SIGTERM) before client
+   * to avoid hanging on a stuck process - mirrors connectInternal() cleanup.
    */
   async stop(): Promise<void> {
     // Wait for any in-progress connection attempt to settle before tearing down
@@ -327,17 +329,20 @@ export class ChromaMcpManager {
       try { await this.connecting; } catch { /* ignore - we're stopping anyway */ }
     }
 
-    if (!this.client) {
+    if (!this.client && !this.transport) {
       logger.debug('CHROMA_MCP', 'No active MCP connection to stop');
       return;
     }
 
     logger.info('CHROMA_MCP', 'Stopping chroma-mcp MCP connection');
 
-    try {
-      await this.client.close();
-    } catch (error) {
-      logger.debug('CHROMA_MCP', 'Error during client close (subprocess may already be dead)', {}, error as Error);
+    // Close transport first (kills subprocess via SIGTERM) before client
+    // to avoid hanging on a stuck process.
+    if (this.transport) {
+      try { await this.transport.close(); } catch { /* already dead */ }
+    }
+    if (this.client) {
+      try { await this.client.close(); } catch { /* already dead */ }
     }
 
     this.client = null;
