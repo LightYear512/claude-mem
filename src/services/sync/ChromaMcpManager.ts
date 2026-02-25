@@ -393,6 +393,24 @@ export class ChromaMcpManager {
       ? this.findChildPids(subprocessPid)
       : [];
 
+    // Windows: Kill the entire process tree BEFORE transport.close() destroys
+    // the parent-child relationship. taskkill /T relies on the tree being intact
+    // to propagate to grandchildren (uvx → python/chroma-mcp). If we let
+    // transport.close() kill cmd.exe first, the grandchildren become orphans
+    // and taskkill can no longer reach them via the tree.
+    if (subprocessPid != null && process.platform === 'win32') {
+      if (Number.isInteger(subprocessPid) && subprocessPid > 0) {
+        try {
+          execSync(`taskkill /PID ${subprocessPid} /T /F`, {
+            timeout: 5000,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            windowsHide: true
+          });
+          logger.debug('CHROMA_MCP', 'Killed subprocess tree on Windows', { pid: subprocessPid });
+        } catch { /* process may have already exited */ }
+      }
+    }
+
     // Close transport first (kills subprocess via SIGTERM) before client
     // to avoid hanging on a stuck process.
     if (this.transport) {
