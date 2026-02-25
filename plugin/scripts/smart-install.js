@@ -10,7 +10,7 @@
  * and legacy paths.
  */
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { execSync, spawnSync } from 'child_process';
+import { execSync, spawnSync, spawn } from 'child_process';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
@@ -69,6 +69,42 @@ function resolveRoot() {
 
 const ROOT = resolveRoot();
 const MARKER = join(ROOT, '.install-version');
+
+// Background install mode: when invoked with --bg-install, run the slow
+// dependency installation synchronously then exit.  This is spawned as a
+// detached child so the SessionStart hook is not blocked.
+if (process.argv.includes('--bg-install')) {
+  try {
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
+    const newVersion = pkg.version;
+
+    installDeps();
+
+    if (!verifyCriticalModules()) {
+      try {
+        execSync('npm install --production', { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+      } catch { /* npm also failed */ }
+      if (!verifyCriticalModules()) {
+        process.exit(1);
+      }
+    }
+
+    // Auto-restart worker to pick up new code
+    const port = process.env.CLAUDE_MEM_WORKER_PORT || 37777;
+    try {
+      execSync(`curl -s -X POST http://127.0.0.1:${port}/api/admin/shutdown`, {
+        stdio: 'ignore',
+        shell: IS_WINDOWS,
+        timeout: 5000
+      });
+    } catch { /* Worker wasn't running or already stopped */ }
+
+    installCLI();
+  } catch (e) {
+    console.error('❌ Background install failed:', e.message);
+  }
+  process.exit(0);
+}
 
 /**
  * Check if Bun is installed and accessible
@@ -531,48 +567,19 @@ try {
     }
   }
 
-  // Step 3: Install dependencies if needed
+  // Step 3: Install dependencies if needed (non-blocking)
+  // worker-service.cjs is an esbuild bundle and does not need node_modules,
+  // so we can safely defer the install to a detached background process.
   if (needsInstall()) {
-    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
-    const newVersion = pkg.version;
-
-    installDeps();
-
-    // Verify critical modules are resolvable
-    if (!verifyCriticalModules()) {
-      console.error('⚠️  Retrying install with npm...');
-      try {
-        execSync('npm install --production', { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
-      } catch {
-        // npm also failed
-      }
-      if (!verifyCriticalModules()) {
-        console.error('❌ Dependencies could not be installed. Plugin may not work correctly.');
-        process.exit(1);
-      }
-    }
-
-    console.error('✅ Dependencies installed');
-
-    // Auto-restart worker to pick up new code
-    const port = process.env.CLAUDE_MEM_WORKER_PORT || 37777;
-    console.error(`[claude-mem] Plugin updated to v${newVersion} - restarting worker...`);
-    try {
-      // Graceful shutdown via HTTP (curl is cross-platform enough)
-      execSync(`curl -s -X POST http://127.0.0.1:${port}/api/admin/shutdown`, {
-        stdio: 'ignore',
-        shell: IS_WINDOWS,
-        timeout: 5000
-      });
-      // Brief wait for port to free
-      execSync(IS_WINDOWS ? 'timeout /t 1 /nobreak >nul' : 'sleep 0.5', {
-        stdio: 'ignore',
-        shell: true
-      });
-    } catch {
-      // Worker wasn't running or already stopped - that's fine
-    }
-    // Worker will be started fresh by next hook in chain (worker-service.cjs start)
+    const scriptPath = fileURLToPath(import.meta.url);
+    const child = spawn(process.execPath, [scriptPath, '--bg-install'], {
+      cwd: ROOT,
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env }
+    });
+    child.unref();
+    console.error('[claude-mem] Dependencies need updating — installing in background...');
   }
 
   // Step 4: Install CLI to PATH
