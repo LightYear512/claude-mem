@@ -604,3 +604,18 @@ sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
 **主项目:** AGPL-3.0 - 如果在网络服务器上修改和部署,必须提供源代码。
 
 **Ragtime 目录:** PolyForm Noncommercial License 1.0.0(单独许可)- 参见 `ragtime/LICENSE`。
+
+---
+
+## Worktree 工作流
+
+### 端口冲突
+Worker 服务绑定端口 37777。在 worktree 中工作时：
+- **不要**在 worktree 中启动单独的 worker（`npm run worker:start`）
+- Worktree 共享主项目的 worker 服务和 SQLite 数据库（`~/.claude-mem/claude-mem.db`）
+- 代码修改在 worktree 中完成，构建和测试使用主项目的 worker
+- 如确需独立 worker，参考 `.env.worktree` 中的 `PORT_OFFSET` 偏移端口
+
+### 构建注意
+- 在 worktree 中可以 `npm run build`，但**不要**运行 `npm run build-and-sync`（会影响主项目的插件安装）
+- 完成后在主项目中合并分支再做 sync
