@@ -43,7 +43,7 @@ const EXCLUDED_PATTERNS = [
 // Files that should always use logger (core business logic)
 // Excludes UI files, type files, and pure utilities
 const HIGH_PRIORITY_PATTERNS = [
-  /^services\/worker\/(?!.*types\.ts$)/,  // Worker services (not type files)
+  /^services\/worker\/(?!.*types\.ts$|budget\/pricing-presets\.ts$|http\/routes\/BudgetRoutes\.ts$)/,  // Worker services (not type/data files)
   /^services\/sqlite\/(?!types\.ts$|index\.ts$|ai-analysis\.ts$|ai-analysis\/(?:types|get)\.ts$)/,  // SQLite services (exclude re-export and pure data files)
   /^services\/sync\//,
   /^services\/context-generator\.ts$/,

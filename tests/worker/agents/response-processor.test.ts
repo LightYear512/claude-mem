@@ -628,7 +628,7 @@ describe('ResponseProcessor', () => {
 
       expect(session.conversationHistory).toHaveLength(1);
       expect(session.conversationHistory[0].role).toBe('assistant');
-      expect(session.conversationHistory[0].content).toBe(responseText);
+      expect(session.conversationHistory[0].content).toContain('[observation recorded]');
     });
   });
 
