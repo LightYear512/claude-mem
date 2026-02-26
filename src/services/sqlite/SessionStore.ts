@@ -926,6 +926,7 @@ export class SessionStore {
           discovery_tokens INTEGER DEFAULT 0,
           created_at TEXT NOT NULL,
           created_at_epoch INTEGER NOT NULL,
+          ai_analysis_id INTEGER REFERENCES ai_analysis(id) ON DELETE SET NULL,
           FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
         )
       `);
@@ -934,7 +935,7 @@ export class SessionStore {
         INSERT INTO observations_new
         SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
                narrative, concepts, files_read, files_modified, prompt_number,
-               discovery_tokens, created_at, created_at_epoch
+               discovery_tokens, created_at, created_at_epoch, ai_analysis_id
         FROM observations
       `);
 
@@ -947,6 +948,7 @@ export class SessionStore {
         CREATE INDEX idx_observations_project ON observations(project);
         CREATE INDEX idx_observations_type ON observations(type);
         CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC);
+        CREATE INDEX IF NOT EXISTS idx_observations_ai_analysis ON observations(ai_analysis_id);
       `);
 
       // Recreate FTS triggers only if observations_fts exists
