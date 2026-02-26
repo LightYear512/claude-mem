@@ -321,19 +321,21 @@ ${o.stack}`:` ${o.message}`:this.getLevel()===0&&typeof o=="object"?p=`
           discovery_tokens INTEGER DEFAULT 0,
           created_at TEXT NOT NULL,
           created_at_epoch INTEGER NOT NULL,
+          ai_analysis_id INTEGER REFERENCES ai_analysis(id) ON DELETE SET NULL,
           FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
         )
       `),this.db.run(`
         INSERT INTO observations_new
         SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
                narrative, concepts, files_read, files_modified, prompt_number,
-               discovery_tokens, created_at, created_at_epoch
+               discovery_tokens, created_at, created_at_epoch, ai_analysis_id
         FROM observations
       `),this.db.run("DROP TABLE observations"),this.db.run("ALTER TABLE observations_new RENAME TO observations"),this.db.run(`
         CREATE INDEX idx_observations_sdk_session ON observations(memory_session_id);
         CREATE INDEX idx_observations_project ON observations(project);
         CREATE INDEX idx_observations_type ON observations(type);
         CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC);
+        CREATE INDEX IF NOT EXISTS idx_observations_ai_analysis ON observations(ai_analysis_id);
       `),this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='observations_fts'").all().length>0&&this.db.run(`
           CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
             INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
