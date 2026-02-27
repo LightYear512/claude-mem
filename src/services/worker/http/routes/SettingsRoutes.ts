@@ -248,8 +248,16 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_EMBEDDING_FUNCTION',
     ];
 
+    // Sensitive keys that are redacted in GET responses — skip update if value is the redaction placeholder
+    const SENSITIVE_KEYS_SET = new Set(['CLAUDE_MEM_GEMINI_API_KEY', 'CLAUDE_MEM_OPENROUTER_API_KEY', 'CLAUDE_MEM_DASHSCOPE_API_KEY']);
+    const REDACTION_PLACEHOLDER = '••••••••';
+
     for (const key of settingKeys) {
       if (req.body[key] !== undefined) {
+        // Don't overwrite real API keys with the redacted placeholder
+        if (SENSITIVE_KEYS_SET.has(key) && req.body[key] === REDACTION_PLACEHOLDER) {
+          continue;
+        }
         settings[key] = req.body[key];
       }
     }
