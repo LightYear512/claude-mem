@@ -15,10 +15,8 @@
 import { writeFile } from 'fs/promises';
 import { join, basename, dirname } from 'path';
 import { existsSync, mkdirSync } from 'fs';
+import { type Plugin, tool } from '@opencode-ai/plugin';
 import type {
-  Plugin,
-  PluginInput,
-  PluginReturn,
   ToolExecuteAfterInput,
   ToolExecuteAfterOutput,
   BusEvent,
@@ -112,7 +110,7 @@ function getProjectNameFromDir(directory: string): string {
 // Plugin Entry Point
 // ============================================================================
 
-const claudeMemPlugin: Plugin = async (ctx: PluginInput) => {
+const claudeMemPlugin: Plugin = async (ctx) => {
   // Read config from OpenCode's plugin config system.
   // OpenCode passes config via the ctx object or environment.
   const config: ClaudeMemOpenCodeConfig = {};
@@ -212,7 +210,7 @@ const claudeMemPlugin: Plugin = async (ctx: PluginInput) => {
   // ------------------------------------------------------------------
   // Return plugin hooks
   // ------------------------------------------------------------------
-  const pluginReturn: PluginReturn = {
+  const pluginReturn = {
     // ================================================================
     // Tool interceptor: capture every tool execution
     // ================================================================
@@ -339,13 +337,13 @@ const claudeMemPlugin: Plugin = async (ctx: PluginInput) => {
     // Custom tool: memory search
     // ================================================================
     tool: {
-      claude_mem_search: {
+      claude_mem_search: tool({
         description:
           'Search claude-mem memory database for past observations, decisions, and patterns across all sessions.',
         args: {
-          query: { type: 'string', description: 'Search query for memory lookup' },
+          query: tool.schema.string().describe('Search query for memory lookup'),
         },
-        async execute(args: Record<string, string>) {
+        async execute(args) {
           const query = args.query;
           if (!query) return 'Please provide a search query.';
 
@@ -357,7 +355,7 @@ const claudeMemPlugin: Plugin = async (ctx: PluginInput) => {
           if (!result) return 'Memory search unavailable. Is the claude-mem worker running?';
           return result;
         },
-      },
+      }),
     },
   };
 
