@@ -98,9 +98,9 @@ async function workerGetText(
 
 function getProjectNameFromDir(directory: string): string {
   try {
-    return basename(dirname(directory)) + '/' + basename(directory);
-  } catch {
     return basename(directory) || 'opencode';
+  } catch {
+    return 'opencode';
   }
 }
 
@@ -127,6 +127,10 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
   // Tracks which sessions have been initialized with the worker
   const initializedSessions = new Set<string>();
   const lastAssistantMessages = new Map<string, string>();
+  // Stores messageID → text content (from message.part.updated, consumed in message.updated)
+  const messageTexts = new Map<string, string>();
+  // Tracks the latest user prompt per session
+  const lastUserPrompts = new Map<string, string>();
 
   function getContentSessionId(sessionID: string): string {
     if (!sessionIds.has(sessionID)) {
@@ -140,14 +144,14 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
    * OpenCode does NOT fire 'session.created' events - it only fires 'session.updated'.
    * We lazily initialize on first contact with any session ID.
    */
-  async function ensureSessionInitialized(sessionID: string): Promise<string> {
+  async function ensureSessionInitialized(sessionID: string, prompt?: string): Promise<string> {
     const contentSessionId = getContentSessionId(sessionID);
     if (!initializedSessions.has(sessionID)) {
       initializedSessions.add(sessionID);
       await workerPost(workerPort, '/api/sessions/init', {
         contentSessionId,
         project: projectName,
-        prompt: '',
+        prompt: prompt || lastUserPrompts.get(sessionID) || '',
       });
       // Sync context at session start
       await syncAgentsContext();
@@ -304,11 +308,11 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
           // properties: { part: Part, delta?: string }
           // Part has: sessionID, messageID, type, text (for TextPart)
           const part = props.part;
-          if (part?.type === 'text' && part.sessionID) {
-            const sessionID = part.sessionID;
+          if (part?.type === 'text' && part.sessionID && part.messageID) {
             const text = part.text || '';
             if (text) {
-              lastAssistantMessages.set(sessionID, text);
+              // Store text keyed by messageID; role is resolved in message.updated
+              messageTexts.set(part.messageID, text);
             }
           }
           break;
@@ -316,14 +320,35 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
 
         case 'message.updated': {
           // properties: { info: Message } where Message = UserMessage | AssistantMessage
-          // Message has sessionID, role, but NOT content (content is in Parts)
+          // Message has sessionID, role, id, but NOT content (content is in Parts)
           const msgInfo = props.info;
-          if (msgInfo?.role === 'assistant' && msgInfo.sessionID) {
-            const sessionID = msgInfo.sessionID;
-            const contentSessionId = await ensureSessionInitialized(sessionID);
-            // Use stored text from message.part.updated events
+          if (!msgInfo?.sessionID) break;
+
+          const sessionID = msgInfo.sessionID;
+          const messageID = msgInfo.id;
+          const text = messageID ? messageTexts.get(messageID) || '' : '';
+
+          if (msgInfo.role === 'user') {
+            // Try multiple sources for user prompt text:
+            // 1. Text from message.part.updated (may arrive before message.updated)
+            // 2. summary.title from the UserMessage itself
+            // 3. summary.body as fallback
+            const userText = text
+              || msgInfo.summary?.title
+              || msgInfo.summary?.body
+              || '';
+            if (userText) {
+              lastUserPrompts.set(sessionID, userText);
+            }
+            // Initialize session with the user's prompt
+            await ensureSessionInitialized(sessionID, userText || undefined);
+          } else if (msgInfo.role === 'assistant') {
+            if (text) {
+              lastAssistantMessages.set(sessionID, text);
+            }
             const lastText = lastAssistantMessages.get(sessionID) || '';
             if (lastText) {
+              const contentSessionId = await ensureSessionInitialized(sessionID);
               workerPostFireAndForget(workerPort, '/api/sessions/observations', {
                 contentSessionId,
                 tool_name: 'assistant_message',
@@ -334,6 +359,11 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
                 cwd: ctx.directory,
               });
             }
+          }
+
+          // Clean up old message text entries to prevent memory leak
+          if (messageID) {
+            messageTexts.delete(messageID);
           }
           break;
         }
@@ -384,6 +414,7 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
           sessionIds.delete(sessionID);
           initializedSessions.delete(sessionID);
           lastAssistantMessages.delete(sessionID);
+          lastUserPrompts.delete(sessionID);
           break;
         }
       }
