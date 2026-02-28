@@ -12,11 +12,20 @@ import type { ContextConfig } from './types.js';
 
 /**
  * Load all context configuration settings
- * Priority: ~/.claude-mem/settings.json > env var > defaults
+ * Priority: overrides (for preview) > ~/.claude-mem/settings.json > env var > defaults
  */
-export function loadContextConfig(): ContextConfig {
+export function loadContextConfig(overrides?: Record<string, string>): ContextConfig {
   const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+  // Apply overrides from query params (for live preview in settings modal)
+  if (overrides) {
+    for (const [key, value] of Object.entries(overrides)) {
+      if (key in settings) {
+        (settings as Record<string, string>)[key] = value;
+      }
+    }
+  }
 
   // For non-code modes, use all types/concepts from active mode instead of settings
   const modeId = settings.CLAUDE_MEM_MODE;

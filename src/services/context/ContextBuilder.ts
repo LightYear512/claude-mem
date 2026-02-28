@@ -125,9 +125,10 @@ function buildContextOutput(
  */
 export async function generateContext(
   input?: ContextInput,
-  useColors: boolean = false
+  useColors: boolean = false,
+  settingsOverrides?: Record<string, string>
 ): Promise<string> {
-  const config = loadContextConfig();
+  const config = loadContextConfig(settingsOverrides);
   const cwd = input?.cwd ?? process.cwd();
   const project = getProjectName(cwd);
 

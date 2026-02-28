@@ -48,6 +48,13 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
       project: selectedProject
     });
 
+    // Pass CLAUDE_MEM_CONTEXT_* settings as query params for live preview
+    for (const [key, value] of Object.entries(settings)) {
+      if (key.startsWith('CLAUDE_MEM_CONTEXT_') && value != null) {
+        params.set(key, String(value));
+      }
+    }
+
     const response = await fetch(`/api/context/preview?${params}`);
     const text = await response.text();
 
@@ -58,7 +65,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     }
 
     setIsLoading(false);
-  }, [selectedProject]);
+  }, [selectedProject, settings]);
 
   // Debounced refresh when settings or selectedProject change
   useEffect(() => {

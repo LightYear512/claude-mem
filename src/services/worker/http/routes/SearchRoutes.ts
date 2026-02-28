@@ -163,7 +163,8 @@ export class SearchRoutes extends BaseRouteHandler {
 
   /**
    * Generate context preview for settings modal
-   * GET /api/context/preview?project=...
+   * GET /api/context/preview?project=...&CLAUDE_MEM_CONTEXT_*=...
+   * Accepts CLAUDE_MEM_CONTEXT_* query params as settings overrides for live preview.
    */
   private handleContextPreview = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const projectName = req.query.project as string;
@@ -171,6 +172,14 @@ export class SearchRoutes extends BaseRouteHandler {
     if (!projectName) {
       this.badRequest(res, 'Project parameter is required');
       return;
+    }
+
+    // Extract CLAUDE_MEM_CONTEXT_* query params as settings overrides
+    const settingsOverrides: Record<string, string> = {};
+    for (const [key, value] of Object.entries(req.query)) {
+      if (key.startsWith('CLAUDE_MEM_CONTEXT_') && typeof value === 'string') {
+        settingsOverrides[key] = value;
+      }
     }
 
     // Import context generator (runs in worker, has access to database)
@@ -185,7 +194,8 @@ export class SearchRoutes extends BaseRouteHandler {
         session_id: 'preview-' + Date.now(),
         cwd: cwd
       },
-      true  // useColors=true for ANSI terminal output
+      true,  // useColors=true for ANSI terminal output
+      Object.keys(settingsOverrides).length > 0 ? settingsOverrides : undefined
     );
 
     // Return as plain text
