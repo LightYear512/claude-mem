@@ -104,12 +104,35 @@ const EMBEDDING_MODEL_METADATA = [
 ];
 
 export class SettingsRoutes extends BaseRouteHandler {
+  private static readonly REDACTION_PLACEHOLDER = '••••••••';
+  private static readonly SENSITIVE_KEYS = [
+    'CLAUDE_MEM_GEMINI_API_KEY',
+    'CLAUDE_MEM_OPENROUTER_API_KEY',
+    'CLAUDE_MEM_DASHSCOPE_API_KEY',
+  ] as const;
+
   constructor(
     private settingsManager: SettingsManager,
     private onSettingsUpdated?: () => void,
     private onVectorReset?: () => void
   ) {
     super();
+  }
+
+  /**
+   * Resolve an API key value: if the candidate is the redaction placeholder
+   * or empty, fall back to the real value from settings.json.
+   */
+  private resolveApiKey(
+    candidate: string | undefined,
+    settingsKey: string,
+    savedSettings: Record<string, unknown>
+  ): string {
+    if (!candidate || candidate === SettingsRoutes.REDACTION_PLACEHOLDER) {
+      const real = savedSettings[settingsKey];
+      return typeof real === 'string' ? real : '';
+    }
+    return candidate;
   }
 
   setupRoutes(app: express.Application): void {
@@ -148,12 +171,11 @@ export class SettingsRoutes extends BaseRouteHandler {
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
     // Redact sensitive fields — show presence but not value
-    const SENSITIVE_KEYS = ['CLAUDE_MEM_GEMINI_API_KEY', 'CLAUDE_MEM_OPENROUTER_API_KEY', 'CLAUDE_MEM_DASHSCOPE_API_KEY'];
     const redacted = { ...settings } as Record<string, unknown>;
-    for (const key of SENSITIVE_KEYS) {
+    for (const key of SettingsRoutes.SENSITIVE_KEYS) {
       if (key in redacted) {
         const val = redacted[key];
-        redacted[key] = typeof val === 'string' && val.length > 0 ? '••••••••' : '';
+        redacted[key] = typeof val === 'string' && val.length > 0 ? SettingsRoutes.REDACTION_PLACEHOLDER : '';
       }
     }
     res.json(redacted);
@@ -249,13 +271,12 @@ export class SettingsRoutes extends BaseRouteHandler {
     ];
 
     // Sensitive keys that are redacted in GET responses — skip update if value is the redaction placeholder
-    const SENSITIVE_KEYS_SET = new Set(['CLAUDE_MEM_GEMINI_API_KEY', 'CLAUDE_MEM_OPENROUTER_API_KEY', 'CLAUDE_MEM_DASHSCOPE_API_KEY']);
-    const REDACTION_PLACEHOLDER = '••••••••';
+    const SENSITIVE_KEYS_SET = new Set<string>(SettingsRoutes.SENSITIVE_KEYS);
 
     for (const key of settingKeys) {
       if (req.body[key] !== undefined) {
         // Don't overwrite real API keys with the redacted placeholder
-        if (SENSITIVE_KEYS_SET.has(key) && req.body[key] === REDACTION_PLACEHOLDER) {
+        if (SENSITIVE_KEYS_SET.has(key) && req.body[key] === SettingsRoutes.REDACTION_PLACEHOLDER) {
           continue;
         }
         settings[key] = req.body[key];
@@ -649,6 +670,11 @@ export class SettingsRoutes extends BaseRouteHandler {
     try {
       let result: { success: boolean; message: string; model?: string; latencyMs?: number };
 
+      // Load saved settings once so resolveApiKey can fall back to real keys
+      const savedSettings = SettingsDefaultsManager.loadFromFile(
+        path.join(homedir(), '.claude-mem', 'settings.json')
+      ) as Record<string, unknown>;
+
       switch (provider) {
         case 'claude':
           // Claude uses Agent SDK which requires OAuth - can't easily test without actual session
@@ -659,7 +685,11 @@ export class SettingsRoutes extends BaseRouteHandler {
           break;
 
         case 'gemini':
-          const geminiApiKey = settings?.CLAUDE_MEM_GEMINI_API_KEY || '';
+          const geminiApiKey = this.resolveApiKey(
+            settings?.CLAUDE_MEM_GEMINI_API_KEY,
+            'CLAUDE_MEM_GEMINI_API_KEY',
+            savedSettings
+          );
           const geminiApiUrl = settings?.CLAUDE_MEM_GEMINI_API_URL || 'https://generativelanguage.googleapis.com/v1beta/models';
           const geminiModel = settings?.CLAUDE_MEM_GEMINI_MODEL || 'gemini-2.5-flash-lite';
 
@@ -671,7 +701,11 @@ export class SettingsRoutes extends BaseRouteHandler {
           break;
 
         case 'openrouter':
-          const openrouterApiKey = settings?.CLAUDE_MEM_OPENROUTER_API_KEY || '';
+          const openrouterApiKey = this.resolveApiKey(
+            settings?.CLAUDE_MEM_OPENROUTER_API_KEY,
+            'CLAUDE_MEM_OPENROUTER_API_KEY',
+            savedSettings
+          );
           const openrouterModel = settings?.CLAUDE_MEM_OPENROUTER_MODEL || 'xiaomi/mimo-v2-flash:free';
 
           if (!openrouterApiKey) {
@@ -682,7 +716,11 @@ export class SettingsRoutes extends BaseRouteHandler {
           break;
 
         case 'dashscope':
-          const dashscopeApiKey = settings?.CLAUDE_MEM_DASHSCOPE_API_KEY || '';
+          const dashscopeApiKey = this.resolveApiKey(
+            settings?.CLAUDE_MEM_DASHSCOPE_API_KEY,
+            'CLAUDE_MEM_DASHSCOPE_API_KEY',
+            savedSettings
+          );
           const dashscopeModel = settings?.CLAUDE_MEM_DASHSCOPE_MODEL || 'qwen-plus';
 
           if (!dashscopeApiKey) {
@@ -732,7 +770,11 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (model.startsWith('dashscope:')) {
       const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
       const currentSettings = SettingsDefaultsManager.loadFromFile(settingsPath);
-      const apiKey = req.body.apiKey || currentSettings.CLAUDE_MEM_DASHSCOPE_API_KEY || '';
+      const apiKey = this.resolveApiKey(
+        req.body.apiKey,
+        'CLAUDE_MEM_DASHSCOPE_API_KEY',
+        currentSettings as Record<string, unknown>
+      );
 
       if (!apiKey) {
         res.json({ success: false, message: 'DashScope API key is required to test remote embedding' });
