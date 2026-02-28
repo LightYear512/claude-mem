@@ -16,10 +16,8 @@ import { writeFile } from 'fs/promises';
 import { join, basename, dirname } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { type Plugin, tool } from '@opencode-ai/plugin';
+import type { Event } from '@opencode-ai/sdk';
 import type {
-  ToolExecuteAfterInput,
-  ToolExecuteAfterOutput,
-  BusEvent,
   ClaudeMemOpenCodeConfig,
 } from './types.js';
 
@@ -110,18 +108,24 @@ function getProjectNameFromDir(directory: string): string {
 // Plugin Entry Point
 // ============================================================================
 
-const claudeMemPlugin: Plugin = async (ctx) => {
+export const claudeMemPlugin: Plugin = async (ctx) => {
+  console.log('[claude-mem] Plugin initializing', { directory: ctx.directory });
+
   // Read config from OpenCode's plugin config system.
   // OpenCode passes config via the ctx object or environment.
   const config: ClaudeMemOpenCodeConfig = {};
   const workerPort = config.workerPort || DEFAULT_WORKER_PORT;
   const projectName = config.project || getProjectNameFromDir(ctx.directory);
   const syncAgentsMd = config.syncAgentsMd !== false;
+  console.log('[claude-mem] Config:', { workerPort, projectName, syncAgentsMd });
 
   // ------------------------------------------------------------------
   // Session tracking
   // ------------------------------------------------------------------
+  // Maps OpenCode sessionID → claude-mem contentSessionId
   const sessionIds = new Map<string, string>();
+  // Tracks which sessions have been initialized with the worker
+  const initializedSessions = new Set<string>();
   const lastAssistantMessages = new Map<string, string>();
 
   function getContentSessionId(sessionID: string): string {
@@ -129,6 +133,26 @@ const claudeMemPlugin: Plugin = async (ctx) => {
       sessionIds.set(sessionID, `opencode-${sessionID}-${Date.now()}`);
     }
     return sessionIds.get(sessionID)!;
+  }
+
+  /**
+   * Ensure a session is initialized with the worker.
+   * OpenCode does NOT fire 'session.created' events - it only fires 'session.updated'.
+   * We lazily initialize on first contact with any session ID.
+   */
+  async function ensureSessionInitialized(sessionID: string): Promise<string> {
+    const contentSessionId = getContentSessionId(sessionID);
+    if (!initializedSessions.has(sessionID)) {
+      initializedSessions.add(sessionID);
+      await workerPost(workerPort, '/api/sessions/init', {
+        contentSessionId,
+        project: projectName,
+        prompt: '',
+      });
+      // Sync context at session start
+      await syncAgentsContext();
+    }
+    return contentSessionId;
   }
 
   // ------------------------------------------------------------------
@@ -214,17 +238,19 @@ const claudeMemPlugin: Plugin = async (ctx) => {
     // ================================================================
     // Tool interceptor: capture every tool execution
     // ================================================================
-    'tool.execute.after': (
-      input: ToolExecuteAfterInput,
-      output: ToolExecuteAfterOutput,
+    'tool.execute.after': async (
+      input: { tool: string; sessionID: string; callID: string; args: any },
+      output: { title: string; output: string; metadata: any },
     ) => {
+      console.log('[claude-mem] tool.execute.after:', input.tool, input.sessionID);
       const toolName = input.tool;
       if (!toolName) return;
 
       // Skip claude-mem tools to prevent recursive observation loops
       if (toolName.startsWith('claude_mem')) return;
 
-      const contentSessionId = getContentSessionId(input.sessionID);
+      // Lazily initialize session on first tool use
+      const contentSessionId = await ensureSessionInitialized(input.sessionID);
 
       // Truncate long tool output
       let toolResponse = output.output || '';
@@ -247,59 +273,77 @@ const claudeMemPlugin: Plugin = async (ctx) => {
     // ================================================================
     // Bus event listener: session lifecycle
     // ================================================================
-    event: async (event: BusEvent) => {
+    event: async ({ event }: { event: Event }) => {
+      console.log('[claude-mem] event received:', event.type);
+      // OpenCode Event structure: { type: string, properties: { ... } }
+      // Properties vary by event type - see @opencode-ai/sdk types
+      const props = (event as any).properties || {};
+
       switch (event.type) {
-        case 'session.created': {
-          const sessionID = (event as any).sessionID || 'default';
-          const contentSessionId = getContentSessionId(sessionID);
-          await workerPost(workerPort, '/api/sessions/init', {
-            contentSessionId,
-            project: projectName,
-            prompt: '',
-          });
-          // Sync context at session start
-          await syncAgentsContext();
+        // OpenCode fires session.updated (NOT session.created) for session lifecycle
+        case 'session.updated': {
+          // properties: { info: Session } where Session.id is the session ID
+          const sessionID = props.info?.id;
+          if (sessionID) {
+            await ensureSessionInitialized(sessionID);
+          }
           break;
         }
 
         case 'session.compacted': {
-          const sessionID = (event as any).sessionID || 'default';
+          // properties: { sessionID: string }
+          const sessionID = props.sessionID || 'default';
           const contentSessionId = getContentSessionId(sessionID);
           // Re-initialize after compaction
-          await workerPost(workerPort, '/api/sessions/init', {
-            contentSessionId,
-            project: projectName,
-            prompt: '',
-          });
+          initializedSessions.delete(sessionID);
+          await ensureSessionInitialized(sessionID);
+          break;
+        }
+
+        case 'message.part.updated': {
+          // properties: { part: Part, delta?: string }
+          // Part has: sessionID, messageID, type, text (for TextPart)
+          const part = props.part;
+          if (part?.type === 'text' && part.sessionID) {
+            const sessionID = part.sessionID;
+            const text = part.text || '';
+            if (text) {
+              lastAssistantMessages.set(sessionID, text);
+            }
+          }
           break;
         }
 
         case 'message.updated': {
-          const sessionID = (event as any).sessionID || 'default';
-          const role = (event as any).role;
-          const content = (event as any).content;
-          if (role === 'assistant' && typeof content === 'string') {
-            lastAssistantMessages.set(sessionID, content);
-
-            // Capture assistant messages as observations per upstream plan
-            const contentSessionId = getContentSessionId(sessionID);
-            workerPostFireAndForget(workerPort, '/api/sessions/observations', {
-              contentSessionId,
-              tool_name: 'assistant_message',
-              tool_input: {},
-              tool_response: content.length > MAX_TOOL_RESPONSE_LENGTH
-                ? content.slice(0, MAX_TOOL_RESPONSE_LENGTH)
-                : content,
-              cwd: ctx.directory,
-            });
+          // properties: { info: Message } where Message = UserMessage | AssistantMessage
+          // Message has sessionID, role, but NOT content (content is in Parts)
+          const msgInfo = props.info;
+          if (msgInfo?.role === 'assistant' && msgInfo.sessionID) {
+            const sessionID = msgInfo.sessionID;
+            const contentSessionId = await ensureSessionInitialized(sessionID);
+            // Use stored text from message.part.updated events
+            const lastText = lastAssistantMessages.get(sessionID) || '';
+            if (lastText) {
+              workerPostFireAndForget(workerPort, '/api/sessions/observations', {
+                contentSessionId,
+                tool_name: 'assistant_message',
+                tool_input: {},
+                tool_response: lastText.length > MAX_TOOL_RESPONSE_LENGTH
+                  ? lastText.slice(0, MAX_TOOL_RESPONSE_LENGTH)
+                  : lastText,
+                cwd: ctx.directory,
+              });
+            }
           }
           break;
         }
 
         case 'file.edited': {
-          const sessionID = (event as any).sessionID || 'default';
-          const contentSessionId = getContentSessionId(sessionID);
-          const filePath = (event as any).path || (event as any).file || '';
+          // properties: { file: string } - no sessionID available
+          const filePath = props.file || '';
+          // Use the most recent active session, or a default
+          const activeSessionID = sessionIds.keys().next().value || 'default';
+          const contentSessionId = await ensureSessionInitialized(activeSessionID);
 
           workerPostFireAndForget(workerPort, '/api/sessions/observations', {
             contentSessionId,
@@ -311,22 +355,34 @@ const claudeMemPlugin: Plugin = async (ctx) => {
           break;
         }
 
+        case 'session.idle': {
+          // properties: { sessionID: string }
+          // Fired when session finishes processing - good time to summarize
+          const sessionID = props.sessionID;
+          if (sessionID && initializedSessions.has(sessionID)) {
+            const contentSessionId = getContentSessionId(sessionID);
+            await workerPost(workerPort, '/api/sessions/summarize', {
+              contentSessionId,
+              last_assistant_message: lastAssistantMessages.get(sessionID) || '',
+            });
+          }
+          break;
+        }
+
         case 'session.deleted': {
-          const sessionID = (event as any).sessionID || 'default';
-          const contentSessionId = getContentSessionId(sessionID);
+          // properties: { info: Session } where Session.id is the session ID
+          const sessionID = props.info?.id || 'default';
+          if (initializedSessions.has(sessionID)) {
+            const contentSessionId = getContentSessionId(sessionID);
 
-          // Summarize then complete (await summarize so worker processes it first)
-          await workerPost(workerPort, '/api/sessions/summarize', {
-            contentSessionId,
-            last_assistant_message: lastAssistantMessages.get(sessionID) || '',
-          });
-
-          workerPostFireAndForget(workerPort, '/api/sessions/complete', {
-            contentSessionId,
-          });
+            workerPostFireAndForget(workerPort, '/api/sessions/complete', {
+              contentSessionId,
+            });
+          }
 
           // Clean up session tracking
           sessionIds.delete(sessionID);
+          initializedSessions.delete(sessionID);
           lastAssistantMessages.delete(sessionID);
           break;
         }
@@ -362,4 +418,6 @@ const claudeMemPlugin: Plugin = async (ctx) => {
   return pluginReturn;
 };
 
+// Named export is required by OpenCode plugin loader
+// Default export kept for backward compatibility
 export default claudeMemPlugin;
