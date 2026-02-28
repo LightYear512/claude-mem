@@ -27,6 +27,11 @@ const CONTEXT_GENERATOR = {
   source: 'src/services/context-generator.ts'
 };
 
+const OPENCODE_PLUGIN = {
+  name: 'opencode-plugin',
+  source: 'src/integrations/opencode/index.ts'
+};
+
 async function buildHooks() {
   console.log('🔨 Building claude-mem hooks and worker service...\n');
 
@@ -182,6 +187,29 @@ async function buildHooks() {
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
 
+    // Build OpenCode plugin (output to dist/, not plugin/ — avoids polluting Claude Code marketplace sync)
+    const opencodeOutDir = 'dist/opencode-plugin';
+    if (!fs.existsSync(opencodeOutDir)) {
+      fs.mkdirSync(opencodeOutDir, { recursive: true });
+    }
+    console.log(`\n🔧 Building OpenCode plugin...`);
+    await build({
+      entryPoints: [OPENCODE_PLUGIN.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'esm',
+      outfile: `${opencodeOutDir}/index.js`,
+      minify: true,
+      logLevel: 'error',
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+      }
+    });
+
+    const opencodePluginStats = fs.statSync(`${opencodeOutDir}/index.js`);
+    console.log(`✓ opencode-plugin built (${(opencodePluginStats.size / 1024).toFixed(2)} KB)`);
+
     // Copy custom Chroma MCP server (Python)
     console.log(`\n📋 Copying custom Chroma MCP server...`);
     const chromaMcpSource = 'src/services/sync/chroma-mcp-server.py';
@@ -206,12 +234,14 @@ async function buildHooks() {
     }
     console.log('✓ All required distribution files present');
 
-    console.log('\n✅ Worker service, MCP server, and context generator built successfully!');
+    console.log('\n✅ All artifacts built successfully!');
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Worker: worker-service.cjs`);
     console.log(`   - MCP Server: mcp-server.cjs`);
     console.log(`   - Context Generator: context-generator.cjs`);
     console.log(`   - Chroma MCP: chroma-mcp-server.py`);
+    console.log(`   Output: ${opencodeOutDir}/`);
+    console.log(`   - OpenCode Plugin: index.js`);
 
   } catch (error) {
     console.error('\n❌ Build failed:', error.message);
