@@ -7,6 +7,11 @@ interface ObservationCardProps {
   observation: Observation;
 }
 
+function safeParse<T>(json: string | null | undefined): T[] {
+  if (!json) return [];
+  try { return JSON.parse(json) as T[]; } catch { return []; }
+}
+
 // Helper to compute longest common directory prefix from file path arrays
 function longestCommonPrefix(parts: string[][]): string[] {
   if (parts.length === 0) return [];
@@ -62,11 +67,11 @@ export function ObservationCard({ observation }: ObservationCardProps) {
   const [showNarrative, setShowNarrative] = useState(false);
   const date = formatDate(observation.created_at_epoch);
 
-  // Parse JSON fields
-  const facts = observation.facts ? JSON.parse(observation.facts) : [];
-  const concepts = observation.concepts ? JSON.parse(observation.concepts) : [];
-  const filesRead = observation.files_read ? JSON.parse(observation.files_read).map(stripProjectRoot) : [];
-  const filesModified = observation.files_modified ? JSON.parse(observation.files_modified).map(stripProjectRoot) : [];
+  // Parse JSON fields — safeParse returns [] on malformed JSON, preventing render crashes
+  const facts = safeParse<string>(observation.facts);
+  const concepts = safeParse<string>(observation.concepts);
+  const filesRead = safeParse<string>(observation.files_read).map(stripProjectRoot);
+  const filesModified = safeParse<string>(observation.files_modified).map(stripProjectRoot);
 
   // Show facts toggle if there are facts, concepts, or files
   const hasFactsContent = facts.length > 0 || concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0;

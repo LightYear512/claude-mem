@@ -34,17 +34,20 @@ function jsonArrayUnion(existingJson: string, newItems: string[]): string {
 
 /**
  * Resolve contentSessionId from memorySessionId via sdk_sessions table.
- * Uses a cached prepared statement for efficiency.
+ * Uses a WeakMap-scoped cache so each Database instance gets its own prepared statement.
+ * This prevents stale statement references after DB reconnection or in tests.
  */
-let resolveStmt: ReturnType<Database['prepare']> | null = null;
+const resolveStmtCache = new WeakMap<Database, ReturnType<Database['prepare']>>();
 
 function resolveContentSessionId(db: Database, memorySessionId: string): string | null {
-  if (!resolveStmt) {
-    resolveStmt = db.prepare(
+  let stmt = resolveStmtCache.get(db);
+  if (!stmt) {
+    stmt = db.prepare(
       'SELECT content_session_id FROM sdk_sessions WHERE memory_session_id = ? LIMIT 1'
     );
+    resolveStmtCache.set(db, stmt);
   }
-  const row = resolveStmt.get(memorySessionId) as { content_session_id: string } | null;
+  const row = stmt.get(memorySessionId) as { content_session_id: string } | null;
   return row?.content_session_id ?? null;
 }
 
@@ -80,41 +83,33 @@ export class WorkContextAccumulator {
 
       const now = Date.now();
 
-      // Try to get existing row
+      // Read existing signals to compute merged values (needed for JS-side array union)
       const existing = db.prepare(
-        'SELECT files, concepts, modules, observation_count FROM session_work_context WHERE content_session_id = ?'
-      ).get(contentSessionId) as { files: string; concepts: string; modules: string; observation_count: number } | null;
+        'SELECT files, concepts, modules FROM session_work_context WHERE content_session_id = ?'
+      ).get(contentSessionId) as { files: string; concepts: string; modules: string } | null;
 
-      if (existing) {
-        // Update: merge new signals into existing context
-        const mergedFiles = jsonArrayUnion(existing.files, allFiles);
-        const mergedConcepts = jsonArrayUnion(existing.concepts, concepts);
-        const mergedModules = jsonArrayUnion(existing.modules, modules);
+      const mergedFiles = existing ? jsonArrayUnion(existing.files, allFiles) : JSON.stringify(allFiles);
+      const mergedConcepts = existing ? jsonArrayUnion(existing.concepts, concepts) : JSON.stringify(concepts);
+      const mergedModules = existing ? jsonArrayUnion(existing.modules, modules) : JSON.stringify(modules);
 
-        db.prepare(`
-          UPDATE session_work_context
-          SET files = ?, concepts = ?, modules = ?,
-              observation_count = observation_count + 1,
-              last_updated_epoch = ?
-          WHERE content_session_id = ?
-        `).run(mergedFiles, mergedConcepts, mergedModules, now, contentSessionId);
-      } else {
-        // Insert new row
-        db.prepare(`
-          INSERT INTO session_work_context
-            (content_session_id, project, files, concepts, modules,
-             observation_count, last_updated_epoch, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, 1, ?, ?)
-        `).run(
-          contentSessionId,
-          project,
-          JSON.stringify(allFiles),
-          JSON.stringify(concepts),
-          JSON.stringify(modules),
-          now,
-          now
-        );
-      }
+      // Atomic upsert: eliminates the TOCTOU race between SELECT and INSERT/UPDATE.
+      // ON CONFLICT handles concurrent inserts for the same content_session_id safely.
+      db.prepare(`
+        INSERT INTO session_work_context
+          (content_session_id, project, files, concepts, modules,
+           observation_count, last_updated_epoch, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+        ON CONFLICT(content_session_id) DO UPDATE SET
+          files = excluded.files,
+          concepts = excluded.concepts,
+          modules = excluded.modules,
+          observation_count = observation_count + 1,
+          last_updated_epoch = excluded.last_updated_epoch
+      `).run(
+        contentSessionId, project,
+        mergedFiles, mergedConcepts, mergedModules,
+        now, now
+      );
 
       logger.debug('WORK_CTX', 'Updated work context', {
         contentSessionId,
@@ -129,9 +124,11 @@ export class WorkContextAccumulator {
   }
 
   /**
-   * Reset the cached prepared statement (useful for tests or DB reconnection).
+   * No-op: kept for backward compatibility with existing tests.
+   * The WeakMap-based cache is automatically invalidated when the Database
+   * instance is replaced, so explicit cache reset is no longer necessary.
    */
   static resetCache(): void {
-    resolveStmt = null;
+    // WeakMap entries are scoped to the Database instance — no manual reset needed.
   }
 }

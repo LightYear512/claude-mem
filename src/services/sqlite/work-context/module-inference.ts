@@ -14,8 +14,8 @@ export function inferModules(filePaths: string[]): string[] {
   for (const fp of filePaths) {
     if (!fp || typeof fp !== 'string') continue;
 
-    // Normalize: strip leading ./ or /
-    const normalized = fp.replace(/^\.?\//, '');
+    // Normalize: convert backslashes to forward slashes (Windows compat), strip leading ./ or /
+    const normalized = fp.replace(/\\/g, '/').replace(/^\.?\//, '');
     const parts = normalized.split('/');
 
     // Need at least 2 parts (dir + file) to infer a module
