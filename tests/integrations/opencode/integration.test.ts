@@ -4,6 +4,14 @@
  * Tests the plugin against a real Express server with stub routes.
  * Validates the full HTTP contract without heavy worker dependencies.
  *
+ * Event format: plugin.event({ event: { type: '...', properties: { ... } } })
+ * - session.updated:       properties.info.id
+ * - session.status:        properties.{ sessionID, status.type: 'idle'|'busy'|'retry' }
+ * - session.idle:          properties.sessionID      (deprecated — no longer triggers summarize)
+ * - session.deleted:       properties.info.id
+ * - message.part.updated:  properties.part.{ type, sessionID, messageID, text }
+ * - message.updated:       properties.info.{ id, sessionID, role }
+ *
  * Pattern: tests/integration/worker-api-endpoints.test.ts
  */
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
@@ -162,14 +170,17 @@ describe('Full Session Lifecycle - E2E', () => {
     expect(agentsMd).toContain('<claude-mem-context>');
     expect(agentsMd).toContain('Previous session summary...');
 
-    // 2. Trigger session.created
-    await plugin.event({ type: 'session.created', sessionID: 'e2e-session' });
+    // 2. Trigger user message via chat.message hook (deterministic, before DB write)
+    await plugin['chat.message'](
+      { sessionID: 'e2e-session', messageID: 'init-msg' },
+      { message: { id: 'init-msg', sessionID: 'e2e-session', role: 'user' }, parts: [{ type: 'text', text: 'start session', synthetic: false }] },
+    );
 
     const initCalls = receivedCalls.filter(c => c.endpoint === 'init');
     expect(initCalls.length).toBeGreaterThanOrEqual(1);
     const initBody = initCalls[initCalls.length - 1].body;
     expect(initBody.contentSessionId).toMatch(/^opencode-e2e-session-\d+$/);
-    expect(initBody.prompt).toBe('');
+    expect(initBody.prompt).toBe('start session');
 
     // 3. Trigger tool.execute.after × 3
     for (let i = 0; i < 3; i++) {
@@ -191,25 +202,26 @@ describe('Full Session Lifecycle - E2E', () => {
     expect(toolNames).toContain('Tool1');
     expect(toolNames).toContain('Tool2');
 
-    // 4. Trigger message.updated (assistant)
-    await plugin.event({
-      type: 'message.updated',
-      sessionID: 'e2e-session',
-      role: 'assistant',
-      content: 'I completed the task.',
-    });
+    // 4. Trigger message.part.updated + message.updated (assistant)
+    // Part update delivers text content first
+    await plugin.event({ event: { type: 'message.part.updated', properties: { part: { type: 'text', sessionID: 'e2e-session', messageID: 'e2e-msg-1', text: 'I completed the task.' } } } });
+    // Message update signals role and completion
+    await plugin.event({ event: { type: 'message.updated', properties: { info: { id: 'e2e-msg-1', sessionID: 'e2e-session', role: 'assistant' } } } });
 
     await new Promise(r => setTimeout(r, 100));
 
-    // 5. Trigger session.deleted (summarize + complete)
-    await plugin.event({ type: 'session.deleted', sessionID: 'e2e-session' });
+    // 5. Trigger session.status idle (summarize) — OpenCode fires this before deprecated session.idle
+    await plugin.event({ event: { type: 'session.status', properties: { sessionID: 'e2e-session', status: { type: 'idle' } } } });
 
-    await new Promise(r => setTimeout(r, 200));
-
-    // Verify summarize was called
+    // Verify summarize was called with the assistant message
     const summarizeCalls = receivedCalls.filter(c => c.endpoint === 'summarize');
     expect(summarizeCalls.length).toBeGreaterThanOrEqual(1);
     expect(summarizeCalls[0].body.last_assistant_message).toBe('I completed the task.');
+
+    // 6. Trigger session.deleted (complete)
+    await plugin.event({ event: { type: 'session.deleted', properties: { info: { id: 'e2e-session' } } } });
+
+    await new Promise(r => setTimeout(r, 200));
 
     // Verify complete was called
     const completeCalls = receivedCalls.filter(c => c.endpoint === 'complete');
@@ -242,9 +254,6 @@ describe('Plugin resilience', () => {
     await closeServer(server);
 
     // Create a server that always returns 500
-    const errorCalls: RecordedCall[] = [];
-    const errorServer = createStubServer(errorCalls);
-    // Override the stub to return 500
     const errorHttpServer = createServer((req, res) => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Internal Server Error' }));
@@ -281,18 +290,22 @@ describe('Plugin resilience', () => {
 describe('Contract validation', () => {
   it('contentSessionId follows "opencode-{id}-{epoch}" pattern', async () => {
     const plugin = await loadPlugin(tempDir);
-    await plugin.event({ type: 'session.created', sessionID: 'contract-test' });
+    // Session is lazily initialized on first user message via chat.message hook
+    await plugin['chat.message'](
+      { sessionID: 'contract-test', messageID: 'ct-msg' },
+      { message: { id: 'ct-msg', sessionID: 'contract-test', role: 'user' }, parts: [{ type: 'text', text: 'hello', synthetic: false }] },
+    );
 
     const initCall = receivedCalls.find(c => c.endpoint === 'init');
     expect(initCall).toBeDefined();
     expect(initCall!.body.contentSessionId).toMatch(/^opencode-contract-test-\d+$/);
   });
 
-  it('tool_response never exceeds 1000 chars in POST body', async () => {
+  it('tool_response never exceeds 4000 chars in POST body', async () => {
     const plugin = await loadPlugin(tempDir);
 
     // Send a very long output
-    const longOutput = 'z'.repeat(5000);
+    const longOutput = 'z'.repeat(8000);
     plugin['tool.execute.after'](
       { tool: 'Read', sessionID: 'trunc-test', callID: 'c1', args: {} },
       { title: '', output: longOutput, metadata: {} },
@@ -302,23 +315,18 @@ describe('Contract validation', () => {
 
     const obsCalls = receivedCalls.filter(c => c.endpoint === 'observations');
     expect(obsCalls.length).toBeGreaterThanOrEqual(1);
-    expect(obsCalls[0].body.tool_response.length).toBeLessThanOrEqual(1000);
+    expect(obsCalls[0].body.tool_response.length).toBeLessThanOrEqual(4000);
   });
 
   it('project name matches expected format', async () => {
     const plugin = await loadPlugin(tempDir);
-
-    // The project name is derived from tempDir: parent/basename
-    const expectedProject = join(
-      // getProjectNameFromDir returns basename(dirname(dir)) + '/' + basename(dir)
-    ).replace(/\\/g, '/');
 
     // Check from the context inject call
     const contextCall = receivedCalls.find(c => c.endpoint === 'context');
     expect(contextCall).toBeDefined();
     expect(contextCall!.query!.projects).toBeDefined();
     // Should contain the basename at minimum
-    const dirBasename = tempDir.split('/').pop()!;
+    const dirBasename = tempDir.split(/[\\/]/).pop()!;
     expect(contextCall!.query!.projects).toContain(dirBasename);
   });
 

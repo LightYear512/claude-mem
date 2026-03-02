@@ -129,10 +129,46 @@ describe('tool.execute.after interceptor', () => {
       const obsCalls = calls.filter(c => c.url.includes('/api/sessions/observations'));
       expect(obsCalls.length).toBe(1);
     });
+
+    it('skips tools in config.skipTools list', async () => {
+      installFetchMock();
+      const mod = await import('../../../src/integrations/opencode/index.js');
+      const plugin = await mod.default({ directory: tempDir, config: { skipTools: ['TodoWrite', 'TodoRead'] } } as any);
+
+      calls.length = 0;
+      plugin['tool.execute.after'](
+        { tool: 'TodoWrite', sessionID: 's1', callID: 'c1', args: { todos: [] } },
+        { title: '', output: 'ok', metadata: {} },
+      );
+      plugin['tool.execute.after'](
+        { tool: 'TodoRead', sessionID: 's1', callID: 'c2', args: {} },
+        { title: '', output: '[]', metadata: {} },
+      );
+
+      await new Promise(r => setTimeout(r, 50));
+      const obsCalls = calls.filter(c => c.url.includes('/api/sessions/observations'));
+      expect(obsCalls.length).toBe(0);
+    });
+
+    it('skipTools does not affect tools not in the list', async () => {
+      installFetchMock();
+      const mod = await import('../../../src/integrations/opencode/index.js');
+      const plugin = await mod.default({ directory: tempDir, config: { skipTools: ['TodoWrite'] } } as any);
+
+      calls.length = 0;
+      plugin['tool.execute.after'](
+        { tool: 'Bash', sessionID: 's1', callID: 'c1', args: { command: 'ls' } },
+        { title: '', output: 'file1.txt', metadata: {} },
+      );
+
+      await new Promise(r => setTimeout(r, 50));
+      const obsCalls = calls.filter(c => c.url.includes('/api/sessions/observations'));
+      expect(obsCalls.length).toBe(1);
+    });
   });
 
   describe('output truncation', () => {
-    it('passes full output when <= 1000 chars', async () => {
+    it('passes full output when <= 4000 chars', async () => {
       installFetchMock();
       const plugin = await loadPlugin(tempDir);
 
@@ -149,11 +185,11 @@ describe('tool.execute.after interceptor', () => {
       expect(obsCalls[0].body.tool_response.length).toBe(500);
     });
 
-    it('truncates to 1000 chars when > 1000', async () => {
+    it('truncates to 4000 chars when > 4000', async () => {
       installFetchMock();
       const plugin = await loadPlugin(tempDir);
 
-      const longOutput = 'b'.repeat(3000);
+      const longOutput = 'b'.repeat(6000);
       calls.length = 0;
       plugin['tool.execute.after'](
         { tool: 'Read', sessionID: 's1', callID: 'c1', args: {} },
@@ -162,7 +198,7 @@ describe('tool.execute.after interceptor', () => {
 
       await new Promise(r => setTimeout(r, 50));
       const obsCalls = calls.filter(c => c.url.includes('/api/sessions/observations'));
-      expect(obsCalls[0].body.tool_response.length).toBe(1000);
+      expect(obsCalls[0].body.tool_response.length).toBe(4000);
     });
 
     it('handles empty output', async () => {
@@ -205,17 +241,19 @@ describe('tool.execute.after interceptor', () => {
     });
 
     it('uses fire-and-forget (workerPostFireAndForget)', async () => {
-      // fire-and-forget means the interceptor returns void (not a Promise)
+      // The interceptor is async (awaits session init), but observation posting
+      // is fire-and-forget — it does not block waiting for the worker response.
       installFetchMock();
       const plugin = await loadPlugin(tempDir);
 
-      // The return value should be undefined (void), not a Promise
+      // Should return a Promise (async function) that resolves quickly
       const result = plugin['tool.execute.after'](
         { tool: 'Bash', sessionID: 's1', callID: 'c1', args: {} },
         { title: '', output: 'ok', metadata: {} },
       );
 
-      expect(result).toBeUndefined();
+      expect(result).toBeInstanceOf(Promise);
+      await result; // resolves without waiting for the observation HTTP call
     });
   });
 
@@ -301,5 +339,71 @@ describe('claude_mem_search tool', () => {
 
     const result = await plugin.tool.claude_mem_search.execute({ query: 'test' });
     expect(result).toBe('Memory search unavailable. Is the claude-mem worker running?');
+  });
+});
+
+// ============================================================================
+// Privacy tag stripping in tool.execute.after
+// ============================================================================
+
+describe('privacy tag stripping in tool.execute.after', () => {
+  it('strips <private> tags from tool output before sending', async () => {
+    installFetchMock();
+    const plugin = await loadPlugin(tempDir);
+
+    calls.length = 0;
+    plugin['tool.execute.after'](
+      { tool: 'Bash', sessionID: 'priv-t1', callID: 'c1', args: { command: 'ls' } },
+      { title: '', output: 'public output <private>secret</private> more output', metadata: {} },
+    );
+
+    await new Promise(r => setTimeout(r, 50));
+    const obsCalls = calls.filter(c => c.url.includes('/api/sessions/observations'));
+    expect(obsCalls.length).toBe(1);
+    expect(obsCalls[0].body.tool_response).not.toContain('<private>');
+    expect(obsCalls[0].body.tool_response).not.toContain('secret');
+    expect(obsCalls[0].body.tool_response).toContain('public output');
+    expect(obsCalls[0].body.tool_response).toContain('more output');
+  });
+
+  it('strips <claude-mem-context> tags from tool output', async () => {
+    installFetchMock();
+    const plugin = await loadPlugin(tempDir);
+
+    calls.length = 0;
+    plugin['tool.execute.after'](
+      { tool: 'Read', sessionID: 'priv-t2', callID: 'c2', args: {} },
+      { title: '', output: 'file content <claude-mem-context>ctx block</claude-mem-context> end', metadata: {} },
+    );
+
+    await new Promise(r => setTimeout(r, 50));
+    const obsCalls = calls.filter(c => c.url.includes('/api/sessions/observations'));
+    expect(obsCalls.length).toBe(1);
+    expect(obsCalls[0].body.tool_response).not.toContain('<claude-mem-context>');
+    expect(obsCalls[0].body.tool_response).not.toContain('ctx block');
+    expect(obsCalls[0].body.tool_response).toContain('file content');
+  });
+
+  it('truncation applies after tag stripping', async () => {
+    installFetchMock();
+    const plugin = await loadPlugin(tempDir);
+
+    // Build: 2500 chars public + private tag + 2500 chars public = 5000 chars after stripping → truncated to 4000
+    const part1 = 'a'.repeat(2500);
+    const part2 = 'b'.repeat(2500);
+    const rawOutput = `${part1}<private>secret</private>${part2}`;
+
+    calls.length = 0;
+    plugin['tool.execute.after'](
+      { tool: 'Read', sessionID: 'priv-t3', callID: 'c3', args: {} },
+      { title: '', output: rawOutput, metadata: {} },
+    );
+
+    await new Promise(r => setTimeout(r, 50));
+    const obsCalls = calls.filter(c => c.url.includes('/api/sessions/observations'));
+    expect(obsCalls.length).toBe(1);
+    // After stripping: 5000 chars → truncated to 4000
+    expect(obsCalls[0].body.tool_response.length).toBe(4000);
+    expect(obsCalls[0].body.tool_response).not.toContain('secret');
   });
 });

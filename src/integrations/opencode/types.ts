@@ -66,4 +66,10 @@ export interface ClaudeMemOpenCodeConfig {
   workerPort?: number;
   /** Whether to sync AGENTS.md with memory context (default: true) */
   syncAgentsMd?: boolean;
+  /**
+   * Tool names to skip when capturing observations.
+   * Tools starting with "claude_mem" are always skipped (recursive prevention).
+   * Example: ["TodoWrite", "TodoRead"]
+   */
+  skipTools?: string[];
 }

@@ -13,8 +13,7 @@
  */
 
 import { writeFile } from 'fs/promises';
-import { join, basename, dirname } from 'path';
-import { existsSync, mkdirSync } from 'fs';
+import { join, basename } from 'path';
 import { type Plugin, tool } from '@opencode-ai/plugin';
 import type { Event } from '@opencode-ai/sdk';
 import type {
@@ -26,7 +25,36 @@ import type {
 // ============================================================================
 
 const DEFAULT_WORKER_PORT = 37777;
-const MAX_TOOL_RESPONSE_LENGTH = 1000;
+const MAX_TOOL_RESPONSE_LENGTH = 4000;
+
+// ============================================================================
+// Privacy tag stripping (edge processing)
+//
+// Matches Claude Code's hook-layer pattern: strip <private> and
+// <claude-mem-context> tags before data reaches the worker service.
+// Inlined here to keep the plugin self-contained (avoids bundling the
+// file-system logger from src/utils/tag-stripping.ts).
+// ============================================================================
+
+function stripPrivateTags(content: string): string {
+  // Fast path: no tags present, return as-is (preserves trailing newlines etc.)
+  if (!content.includes('<private>') && !content.includes('<claude-mem-context>')) {
+    return content;
+  }
+  return content
+    .replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '')
+    .replace(/<private>[\s\S]*?<\/private>/g, '')
+    .trim();
+}
+
+/**
+ * Returns true when the original content was entirely wrapped in <private>
+ * tags (i.e., nothing remains after stripping). Used to skip observations
+ * that the user has explicitly marked as private.
+ */
+function isEntirelyPrivate(original: string, stripped: string): boolean {
+  return original.includes('<private>') && stripped.length === 0;
+}
 
 // ============================================================================
 // Worker HTTP Client
@@ -113,11 +141,15 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
 
   // Read config from OpenCode's plugin config system.
   // OpenCode passes config via the ctx object or environment.
-  const config: ClaudeMemOpenCodeConfig = {};
+  // Config may be passed via ctx.config (OpenCode plugin config system) or default to empty
+  const config: ClaudeMemOpenCodeConfig = (ctx as any).config ?? {};
   const workerPort = config.workerPort || DEFAULT_WORKER_PORT;
-  const projectName = config.project || getProjectNameFromDir(ctx.directory);
+  // ctx.project?.name is the OpenCode project name (optional field); fall back to directory basename
+  const projectName = config.project || (ctx as any).project?.name || getProjectNameFromDir(ctx.directory);
   const syncAgentsMd = config.syncAgentsMd !== false;
-  console.log('[claude-mem] Config:', { workerPort, projectName, syncAgentsMd });
+  // Build a Set for O(1) skip lookups; tools starting with "claude_mem" are always skipped
+  const skipToolsSet = new Set<string>(config.skipTools ?? []);
+  console.log('[claude-mem] Config:', { workerPort, projectName, syncAgentsMd, skipTools: [...skipToolsSet] });
 
   // ------------------------------------------------------------------
   // Session tracking
@@ -127,9 +159,10 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
   // Tracks which sessions have been initialized with the worker
   const initializedSessions = new Set<string>();
   const lastAssistantMessages = new Map<string, string>();
-  // Stores messageID → text content (from message.part.updated, consumed in message.updated)
+  // Stores messageID → text content accumulated from message.part.updated events.
+  // Only consumed for assistant messages; user messages are handled via chat.message hook.
   const messageTexts = new Map<string, string>();
-  // Tracks the latest user prompt per session
+  // Tracks the latest user prompt per session (set by chat.message hook)
   const lastUserPrompts = new Map<string, string>();
 
   function getContentSessionId(sessionID: string): string {
@@ -240,6 +273,62 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
   // ------------------------------------------------------------------
   const pluginReturn = {
     // ================================================================
+    // User message hook: deterministic capture of user intent
+    //
+    // chat.message fires synchronously inside createUserMessage() BEFORE:
+    //   - the message is written to the database
+    //   - message.updated / message.part.updated events are published
+    //   - any tool execution begins
+    //
+    // This guarantees session init always has a real prompt, eliminating
+    // the race condition where tool.execute.after fires before message.updated.
+    // ================================================================
+    'chat.message': async (
+      input: { sessionID: string; agent?: string; model?: { providerID: string; modelID: string }; messageID?: string; variant?: string },
+      output: { message: any; parts: any[] },
+    ) => {
+      console.log('[claude-mem] chat.message:', input.sessionID);
+      const { sessionID } = input;
+      const { parts } = output;
+
+      // Extract text directly from assembled parts — no event-timing games needed.
+      // Filter out synthetic parts (auto-injected content, e.g. Read tool output).
+      const rawText = parts
+        .filter((p: any) => p.type === 'text' && !p.synthetic)
+        .map((p: any) => String(p.text || ''))
+        .join('\n')
+        .trim();
+
+      // Fall back to placeholder for media-only messages (images, files)
+      const text = rawText || '[media prompt]';
+
+      // Strip privacy tags at edge before sending to worker
+      const strippedText = stripPrivateTags(text);
+      if (isEntirelyPrivate(text, strippedText)) return;
+
+      lastUserPrompts.set(sessionID, strippedText);
+      const contentSessionId = getContentSessionId(sessionID);
+
+      if (!initializedSessions.has(sessionID)) {
+        // First message: initialize session with real user text
+        initializedSessions.add(sessionID);
+        await workerPost(workerPort, '/api/sessions/init', {
+          contentSessionId,
+          project: projectName,
+          prompt: strippedText,
+        });
+        await syncAgentsContext();
+      } else {
+        // Subsequent turns: record new prompt (worker increments prompt counter)
+        await workerPost(workerPort, '/api/sessions/init', {
+          contentSessionId,
+          project: projectName,
+          prompt: strippedText,
+        });
+      }
+    },
+
+    // ================================================================
     // Tool interceptor: capture every tool execution
     // ================================================================
     'tool.execute.after': async (
@@ -250,14 +339,16 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
       const toolName = input.tool;
       if (!toolName) return;
 
-      // Skip claude-mem tools to prevent recursive observation loops
+      // Skip claude-mem tools to prevent recursive observation loops (always enforced)
       if (toolName.startsWith('claude_mem')) return;
+      // Skip user-configured tools
+      if (skipToolsSet.has(toolName)) return;
 
       // Lazily initialize session on first tool use
       const contentSessionId = await ensureSessionInitialized(input.sessionID);
 
-      // Truncate long tool output
-      let toolResponse = output.output || '';
+      // Strip privacy tags then truncate long tool output
+      let toolResponse = stripPrivateTags(output.output || '');
       if (toolResponse.length > MAX_TOOL_RESPONSE_LENGTH) {
         toolResponse = toolResponse.slice(0, MAX_TOOL_RESPONSE_LENGTH);
       }
@@ -284,34 +375,29 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
       const props = (event as any).properties || {};
 
       switch (event.type) {
-        // OpenCode fires session.updated (NOT session.created) for session lifecycle
+        // OpenCode fires session.updated frequently — do NOT init here.
+        // Session init happens lazily on first tool use or user message,
+        // so we always have a real prompt instead of an empty placeholder.
         case 'session.updated': {
-          // properties: { info: Session } where Session.id is the session ID
-          const sessionID = props.info?.id;
-          if (sessionID) {
-            await ensureSessionInitialized(sessionID);
-          }
           break;
         }
 
         case 'session.compacted': {
           // properties: { sessionID: string }
+          // Clear the initialized flag so the next user message re-inits with a real prompt
           const sessionID = props.sessionID || 'default';
-          const contentSessionId = getContentSessionId(sessionID);
-          // Re-initialize after compaction
           initializedSessions.delete(sessionID);
-          await ensureSessionInitialized(sessionID);
           break;
         }
 
         case 'message.part.updated': {
           // properties: { part: Part, delta?: string }
-          // Part has: sessionID, messageID, type, text (for TextPart)
+          // Accumulates text for assistant messages; user message text is captured
+          // directly in the chat.message hook (which has the complete parts array).
           const part = props.part;
-          if (part?.type === 'text' && part.sessionID && part.messageID) {
+          if (part?.type === 'text' && part.messageID) {
             const text = part.text || '';
             if (text) {
-              // Store text keyed by messageID; role is resolved in message.updated
               messageTexts.set(part.messageID, text);
             }
           }
@@ -320,31 +406,21 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
 
         case 'message.updated': {
           // properties: { info: Message } where Message = UserMessage | AssistantMessage
-          // Message has sessionID, role, id, but NOT content (content is in Parts)
           const msgInfo = props.info;
           if (!msgInfo?.sessionID) break;
 
           const sessionID = msgInfo.sessionID;
           const messageID = msgInfo.id;
-          const text = messageID ? messageTexts.get(messageID) || '' : '';
 
-          if (msgInfo.role === 'user') {
-            // Try multiple sources for user prompt text:
-            // 1. Text from message.part.updated (may arrive before message.updated)
-            // 2. summary.title from the UserMessage itself
-            // 3. summary.body as fallback
-            const userText = text
-              || msgInfo.summary?.title
-              || msgInfo.summary?.body
-              || '';
-            if (userText) {
-              lastUserPrompts.set(sessionID, userText);
-            }
-            // Initialize session with the user's prompt
-            await ensureSessionInitialized(sessionID, userText || undefined);
-          } else if (msgInfo.role === 'assistant') {
+          if (msgInfo.role === 'assistant') {
+            // Assistant text comes from the accumulated messageTexts cache
+            const text = messageID ? messageTexts.get(messageID) || '' : '';
             if (text) {
-              lastAssistantMessages.set(sessionID, text);
+              // Strip tags at edge before storing or sending to worker
+              const strippedAssistant = stripPrivateTags(text);
+              if (strippedAssistant) {
+                lastAssistantMessages.set(sessionID, strippedAssistant);
+              }
             }
             const lastText = lastAssistantMessages.get(sessionID) || '';
             if (lastText) {
@@ -360,8 +436,9 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
               });
             }
           }
+          // user role: handled by chat.message hook — nothing to do here
 
-          // Clean up old message text entries to prevent memory leak
+          // Always clean up the text cache entry to prevent memory leaks
           if (messageID) {
             messageTexts.delete(messageID);
           }
@@ -369,8 +446,8 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
         }
 
         case 'file.edited': {
-          // properties: { file: string } - no sessionID available
-          const filePath = props.file || '';
+          // properties: { file: string } or { path: string } - no sessionID available
+          const filePath = props.path || props.file || '';
           // Use the most recent active session, or a default
           const activeSessionID = sessionIds.keys().next().value || 'default';
           const contentSessionId = await ensureSessionInitialized(activeSessionID);
@@ -385,17 +462,24 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
           break;
         }
 
-        case 'session.idle': {
-          // properties: { sessionID: string }
-          // Fired when session finishes processing - good time to summarize
+        case 'session.status': {
+          // properties: { sessionID: string, status: { type: 'idle' | 'retry' | 'busy' } }
+          // Replacement for deprecated session.idle — fires when session becomes idle
           const sessionID = props.sessionID;
-          if (sessionID && initializedSessions.has(sessionID)) {
+          const statusType = props.status?.type;
+          if (sessionID && statusType === 'idle' && initializedSessions.has(sessionID)) {
             const contentSessionId = getContentSessionId(sessionID);
             await workerPost(workerPort, '/api/sessions/summarize', {
               contentSessionId,
               last_assistant_message: lastAssistantMessages.get(sessionID) || '',
             });
           }
+          break;
+        }
+
+        case 'session.idle': {
+          // Deprecated — OpenCode fires session.status immediately before this.
+          // We handle summarize in session.status to avoid calling it twice.
           break;
         }
 
@@ -417,6 +501,25 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
           lastUserPrompts.delete(sessionID);
           break;
         }
+      }
+    },
+
+    // ================================================================
+    // Session compaction hook: inject memory context into the compaction prompt
+    // OpenCode calls this before generating a compaction summary, allowing plugins
+    // to add extra context strings that get appended to the compaction prompt.
+    // ================================================================
+    'experimental.session.compacting': async (
+      input: { sessionID: string },
+      output: { context: string[]; prompt?: string },
+    ) => {
+      console.log('[claude-mem] experimental.session.compacting:', input.sessionID);
+      const contextText = await workerGetText(
+        workerPort,
+        `/api/context/inject?projects=${encodeURIComponent(projectName)}`,
+      );
+      if (contextText && contextText.trim().length > 0) {
+        output.context.push(`## claude-mem Memory Context\n\n${contextText}`);
       }
     },
 

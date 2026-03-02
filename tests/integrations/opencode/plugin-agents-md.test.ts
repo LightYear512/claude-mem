@@ -214,20 +214,18 @@ describe('syncAgentsContext - error handling', () => {
 // ============================================================================
 
 describe('getProjectNameFromDir (via plugin project name)', () => {
-  it('derives parent/basename format from directory', async () => {
+  it('derives basename format from directory', async () => {
     installFetchMock('# Context');
 
-    // Create a nested dir structure to get meaningful project name
+    // Create a nested dir structure
     const nestedDir = join(tempDir, 'repos', 'my-project');
     mkdirSync(nestedDir, { recursive: true });
 
     await loadPlugin(nestedDir);
 
-    // Verify project name is included in the context inject URL
-    // The plugin calls /api/context/inject?projects=repos/my-project (or similar)
-    // We capture this from the fetch mock
+    // Verify project name is the basename of the directory
+    // The plugin calls /api/context/inject?projects=my-project
     const contextUrl = await new Promise<string>((resolve) => {
-      const origFetch = global.fetch;
       global.fetch = (async (input: any, init?: any) => {
         const url = typeof input === 'string' ? input : input.url;
         if (url.includes('/api/context/inject')) {
@@ -239,10 +237,12 @@ describe('getProjectNameFromDir (via plugin project name)', () => {
         });
       }) as any;
 
-      // Re-trigger sync via session.created
+      // Re-trigger sync via plugin load
       loadPlugin(nestedDir).catch(() => {});
     });
 
-    expect(contextUrl).toContain('repos%2Fmy-project');
+    expect(contextUrl).toContain('my-project');
+    // Should NOT contain the parent directory
+    expect(contextUrl).not.toContain('repos%2F');
   });
 });
