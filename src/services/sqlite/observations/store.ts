@@ -7,6 +7,7 @@ import { createHash } from 'crypto';
 import { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
 import { getCurrentProjectName } from '../../../shared/paths.js';
+import { WorkContextAccumulator } from '../work-context/accumulator.js';
 import type { ObservationInput, StoreObservationResult } from './types.js';
 
 /** Deduplication window: observations with the same content hash within this window are skipped */
@@ -96,6 +97,9 @@ export function storeObservation(
     timestampIso,
     timestampEpoch
   );
+
+  // Accumulate work context for context-aware search (non-blocking)
+  WorkContextAccumulator.updateFromObservation(db, memorySessionId, resolvedProject, observation);
 
   return {
     id: Number(result.lastInsertRowid),

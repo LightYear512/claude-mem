@@ -36,6 +36,7 @@ export class MigrationRunner {
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
     this.createBudgetTables();
+    this.createSessionWorkContextTable();
   }
 
   /**
@@ -1074,5 +1075,56 @@ export class MigrationRunner {
     }
 
     logger.debug('DB', 'Successfully created budget tracking tables');
+  }
+
+  /**
+   * Create session work context table (migration 025)
+   * Stores accumulated work context per session for context-aware search re-ranking.
+   * This is a materialized view of per-session activity (files, concepts, modules).
+   */
+  private createSessionWorkContextTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(25) as SchemaVersion | undefined;
+    if (applied) return;
+
+    // Check if table already exists
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='session_work_context'").all() as TableNameRow[];
+    if (tables.length > 0) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
+      return;
+    }
+
+    logger.debug('DB', 'Creating session_work_context table');
+
+    try {
+      this.db.run('BEGIN TRANSACTION');
+
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS session_work_context (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          content_session_id TEXT NOT NULL UNIQUE,
+          project TEXT NOT NULL,
+          files TEXT DEFAULT '[]',
+          concepts TEXT DEFAULT '[]',
+          modules TEXT DEFAULT '[]',
+          observation_count INTEGER DEFAULT 0,
+          last_updated_epoch INTEGER NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          FOREIGN KEY(content_session_id) REFERENCES sdk_sessions(content_session_id)
+            ON DELETE CASCADE ON UPDATE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_swc_project ON session_work_context(project);
+        CREATE INDEX IF NOT EXISTS idx_swc_updated ON session_work_context(last_updated_epoch DESC)
+      `);
+
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
+
+      this.db.run('COMMIT');
+    } catch (error) {
+      try { this.db.run('ROLLBACK'); } catch { /* already rolled back */ }
+      throw error;
+    }
+
+    logger.debug('DB', 'Successfully created session_work_context table');
   }
 }

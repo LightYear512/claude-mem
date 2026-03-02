@@ -16,6 +16,7 @@ import { ChromaSync } from '../../sync/ChromaSync.js';
 import { ChromaSearchStrategy } from './strategies/ChromaSearchStrategy.js';
 import { SQLiteSearchStrategy } from './strategies/SQLiteSearchStrategy.js';
 import { HybridSearchStrategy } from './strategies/HybridSearchStrategy.js';
+import { ContextBooster } from './ContextBooster.js';
 
 import { ResultFormatter } from './ResultFormatter.js';
 import { TimelineBuilder } from './TimelineBuilder.js';
@@ -30,6 +31,8 @@ import type {
   SearchResults,
   ObservationSearchResult
 } from './types.js';
+import { getWorkContext } from '../../sqlite/work-context/get.js';
+import type { WorkContext } from '../../sqlite/work-context/types.js';
 import { logger } from '../../../utils/logger.js';
 
 /**
@@ -45,6 +48,7 @@ export class SearchOrchestrator {
   private chromaStrategy: ChromaSearchStrategy | null = null;
   private sqliteStrategy: SQLiteSearchStrategy;
   private hybridStrategy: HybridSearchStrategy | null = null;
+  private contextBooster = new ContextBooster();
   private resultFormatter: ResultFormatter;
   private timelineBuilder: TimelineBuilder;
 
@@ -71,26 +75,59 @@ export class SearchOrchestrator {
   async search(args: any): Promise<StrategySearchResult> {
     const options = this.normalizeParams(args);
 
+    // Load work context if session_id is provided (opt-in context-aware search)
+    let workContext: WorkContext | null = null;
+    if (options.sessionId) {
+      try {
+        workContext = getWorkContext(this.sessionStore.db, options.sessionId);
+        if (workContext) {
+          logger.debug('SEARCH', 'Loaded work context for session', {
+            sessionId: options.sessionId,
+            files: workContext.files.length,
+            concepts: workContext.concepts.length,
+            modules: workContext.modules.length
+          });
+        }
+      } catch (error) {
+        logger.debug('SEARCH', 'Failed to load work context', {}, error as Error);
+      }
+    }
+
     // Decision tree for strategy selection
-    return await this.executeWithFallback(options);
+    return await this.executeWithFallback(options, workContext);
   }
 
   /**
    * Execute search with fallback logic
    */
   private async executeWithFallback(
-    options: NormalizedParams
+    options: NormalizedParams,
+    workContext?: WorkContext | null
   ): Promise<StrategySearchResult> {
     // PATH 1: FILTER-ONLY (no query text) - Use SQLite
     if (!options.query) {
       logger.debug('SEARCH', 'Orchestrator: Filter-only query, using SQLite', {});
-      return await this.sqliteStrategy.search(options);
+      const result = await this.sqliteStrategy.search(options);
+
+      // Apply context boost on SQLite results if work context available
+      if (workContext && result.results.observations.length > 1) {
+        result.results.observations = this.contextBooster.boostObservations(
+          result.results.observations,
+          workContext
+        );
+        logger.debug('SEARCH', 'Orchestrator: Applied context boost to SQLite results', {});
+      }
+
+      return result;
     }
 
     // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
     if (this.chromaStrategy) {
       logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {});
-      const result = await this.chromaStrategy.search(options);
+      const result = await this.chromaStrategy.search(
+        options,
+        workContext ?? undefined
+      );
 
       // If Chroma succeeded (even with 0 results), return
       if (result.usedChroma) {
@@ -103,6 +140,14 @@ export class SearchOrchestrator {
         ...options,
         query: undefined // Remove query for SQLite fallback
       });
+
+      // Apply context boost on fallback results
+      if (workContext && fallbackResult.results.observations.length > 1) {
+        fallbackResult.results.observations = this.contextBooster.boostObservations(
+          fallbackResult.results.observations,
+          workContext
+        );
+      }
 
       return {
         ...fallbackResult,

@@ -110,6 +110,8 @@ export interface StrategySearchOptions extends ExtendedSearchOptions {
   query?: string;
   /** Force a specific strategy */
   strategyHint?: SearchStrategyHint;
+  /** Session ID for context-aware re-ranking (optional, opt-in) */
+  sessionId?: string;
 }
 
 /**

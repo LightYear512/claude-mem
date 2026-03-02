@@ -31,10 +31,14 @@ import {
   SEARCH_CONSTANTS
 } from './search/index.js';
 import type { TimelineData } from './search/index.js';
+import { ContextBooster } from './search/ContextBooster.js';
+import { getWorkContext } from '../sqlite/work-context/get.js';
+import type { WorkContext } from '../sqlite/work-context/types.js';
 
 export class SearchManager {
   private orchestrator: SearchOrchestrator;
   private timelineBuilder: TimelineBuilder;
+  private contextBooster = new ContextBooster();
 
   constructor(
     private sessionSearch: SessionSearch,
@@ -235,6 +239,22 @@ export class SearchManager {
       observations = [];
       sessions = [];
       prompts = [];
+    }
+
+    // Context-aware re-ranking: boost results matching current session's work context
+    if (normalized.session_id && observations.length > 1) {
+      try {
+        const workCtx = getWorkContext(this.sessionStore.db, normalized.session_id as string);
+        if (workCtx) {
+          observations = this.contextBooster.boostObservations(observations, workCtx);
+          logger.debug('SEARCH', 'Applied context boost in SearchManager', {
+            sessionId: normalized.session_id,
+            observationCount: observations.length
+          });
+        }
+      } catch (error) {
+        logger.debug('SEARCH', 'Failed to apply context boost', {}, error as Error);
+      }
     }
 
     const totalResults = observations.length + sessions.length + prompts.length;
