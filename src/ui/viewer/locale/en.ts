@@ -34,6 +34,8 @@ export const en: TranslationDict = {
   'observation.read': 'read:',
   'observation.modified': 'modified:',
   'observation.untitled': 'Untitled',
+  'observation.files': '{count} files',
+  'observation.filesIn': '{count} files ({prefix})',
 
   // Prompt Card
   'prompt.label': 'Prompt',

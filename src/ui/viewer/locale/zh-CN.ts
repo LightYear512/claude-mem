@@ -34,6 +34,8 @@ export const zhCN: TranslationDict = {
   'observation.read': '读取:',
   'observation.modified': '修改:',
   'observation.untitled': '无标题',
+  'observation.files': '{count} 个文件',
+  'observation.filesIn': '{count} 个文件 ({prefix})',
 
   // Prompt Card
   'prompt.label': '提示',

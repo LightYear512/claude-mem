@@ -7,6 +7,31 @@ interface ObservationCardProps {
   observation: Observation;
 }
 
+// Helper to compute longest common directory prefix from file path arrays
+function longestCommonPrefix(parts: string[][]): string[] {
+  if (parts.length === 0) return [];
+  let prefix = parts[0];
+  for (let i = 1; i < parts.length; i++) {
+    const shorter = Math.min(prefix.length, parts[i].length);
+    let j = 0;
+    while (j < shorter && prefix[j] === parts[i][j]) j++;
+    prefix = prefix.slice(0, j);
+  }
+  return prefix;
+}
+
+// Returns a compact file summary string, or null if no files
+function getFilesSummary(filesRead: string[], filesModified: string[]): { count: number; prefix: string } | null {
+  const allFiles = [...new Set([...filesRead, ...filesModified])];
+  if (allFiles.length === 0) return null;
+  if (allFiles.length === 1) return { count: 1, prefix: allFiles[0] };
+  const parts = allFiles.map(f => f.split('/'));
+  const common = longestCommonPrefix(parts);
+  // Keep max 3 directory levels for readability
+  const prefixStr = common.length > 0 ? common.slice(0, 3).join('/') + '/' : '';
+  return { count: allFiles.length, prefix: prefixStr };
+}
+
 // Helper to strip project root from file paths
 function stripProjectRoot(filePath: string): string {
   // Try to extract relative path by finding common project markers
@@ -114,23 +139,41 @@ export function ObservationCard({ observation }: ObservationCardProps) {
         )}
       </div>
 
-      {/* Metadata footer - id, date, and conditionally concepts/files when facts toggle is on */}
+      {/* Concepts - always visible when present */}
+      {concepts.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '6px' }}>
+          {concepts.map((concept: string, i: number) => (
+            <span key={i} style={{
+              padding: '2px 8px',
+              background: 'var(--color-type-badge-bg)',
+              color: 'var(--color-type-badge-text)',
+              borderRadius: '3px',
+              fontWeight: '500',
+              fontSize: '10px'
+            }}>
+              {concept}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Metadata footer - id, date, file summary, and conditionally files detail when facts toggle is on */}
       <div className="card-meta">
-        <span className="meta-date">#{observation.id} • {date}</span>
-        {showFacts && (concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0) && (
+        <span className="meta-date">
+          #{observation.id} • {date}
+          {(() => {
+            const summary = getFilesSummary(filesRead, filesModified);
+            if (!summary) return null;
+            const label = summary.count === 1
+              ? summary.prefix
+              : summary.prefix
+                ? t('observation.filesIn', { count: summary.count, prefix: summary.prefix })
+                : t('observation.files', { count: summary.count });
+            return <span style={{ opacity: 0.7 }}> • 📁 {label}</span>;
+          })()}
+        </span>
+        {showFacts && (filesRead.length > 0 || filesModified.length > 0) && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
-            {concepts.map((concept: string, i: number) => (
-              <span key={i} style={{
-                padding: '2px 8px',
-                background: 'var(--color-type-badge-bg)',
-                color: 'var(--color-type-badge-text)',
-                borderRadius: '3px',
-                fontWeight: '500',
-                fontSize: '10px'
-              }}>
-                {concept}
-              </span>
-            ))}
             {filesRead.length > 0 && (
               <span className="meta-files">
                 <span className="file-label">{t('observation.read')}</span> {filesRead.join(', ')}
