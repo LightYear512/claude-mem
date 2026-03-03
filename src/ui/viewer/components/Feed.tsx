@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useEffect } from 'react';
+import React, { useMemo, useRef, useEffect, useCallback } from 'react';
 import { Observation, Summary, UserPrompt, FeedItem } from '../types';
 import { ObservationCard } from './ObservationCard';
 import { SummaryCard } from './SummaryCard';
@@ -18,8 +18,8 @@ interface FeedProps {
 
 export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, hasMore }: FeedProps) {
   const { t } = useLocale();
-  const loadMoreRef = useRef<HTMLDivElement>(null);
   const feedRef = useRef<HTMLDivElement>(null);
+  const observerRef = useRef<IntersectionObserver | null>(null);
   const onLoadMoreRef = useRef(onLoadMore);
 
   // Keep the callback ref up to date
@@ -27,30 +27,37 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
     onLoadMoreRef.current = onLoadMore;
   }, [onLoadMore]);
 
-  // Set up intersection observer for infinite scroll
-  useEffect(() => {
-    const element = loadMoreRef.current;
-    if (!element) return;
+  // Callback ref for the sentinel element - re-observes whenever the DOM element changes
+  const sentinelRef = useCallback((element: HTMLDivElement | null) => {
+    // Clean up previous observer
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+      observerRef.current = null;
+    }
+
+    if (!element || !feedRef.current) return;
 
     const observer = new IntersectionObserver(
       (entries) => {
-        const first = entries[0];
-        if (first.isIntersecting && hasMore && !isLoading) {
+        if (entries[0].isIntersecting) {
           onLoadMoreRef.current?.();
         }
       },
-      { threshold: UI.LOAD_MORE_THRESHOLD }
+      { root: feedRef.current, threshold: UI.LOAD_MORE_THRESHOLD }
     );
 
     observer.observe(element);
+    observerRef.current = observer;
+  }, []);
 
+  // Clean up observer on unmount
+  useEffect(() => {
     return () => {
-      if (element) {
-        observer.unobserve(element);
+      if (observerRef.current) {
+        observerRef.current.disconnect();
       }
-      observer.disconnect();
     };
-  }, [hasMore, isLoading]);
+  }, []);
 
   const items = useMemo<FeedItem[]>(() => {
     const combined = [
@@ -88,7 +95,7 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
           </div>
         )}
         {hasMore && !isLoading && items.length > 0 && (
-          <div ref={loadMoreRef} style={{ height: '20px', margin: '10px 0' }} />
+          <div ref={sentinelRef} style={{ height: '20px', margin: '10px 0' }} />
         )}
         {!hasMore && items.length > 0 && (
           <div style={{ textAlign: 'center', padding: '20px', color: '#8b949e', fontSize: '14px' }}>
