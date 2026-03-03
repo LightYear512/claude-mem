@@ -116,6 +116,7 @@ export interface ViewerSettings {
 export interface Observation {
   id: number;
   memory_session_id: string;  // Renamed from sdk_session_id
+  content_session_id: string | null;  // Claude Code session ID (denormalized)
   project: string;
   type: string;
   title: string;

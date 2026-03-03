@@ -1743,7 +1743,8 @@ export class SessionStore {
     },
     promptNumber?: number,
     discoveryTokens: number = 0,
-    overrideTimestampEpoch?: number
+    overrideTimestampEpoch?: number,
+    contentSessionId?: string
   ): { id: number; createdAtEpoch: number } {
     // Use override timestamp if provided (for processing backlog messages with original timestamps)
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -1756,15 +1757,23 @@ export class SessionStore {
       return { id: existing.id, createdAtEpoch: existing.created_at_epoch };
     }
 
+    // Resolve content_session_id: use provided value, or look up from sdk_sessions
+    let resolvedContentSessionId = contentSessionId || null;
+    if (!resolvedContentSessionId) {
+      const row = this.db.prepare('SELECT content_session_id FROM sdk_sessions WHERE memory_session_id = ?').get(memorySessionId) as { content_session_id: string } | null;
+      resolvedContentSessionId = row?.content_session_id || null;
+    }
+
     const stmt = this.db.prepare(`
       INSERT INTO observations
-      (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
+      (memory_session_id, content_session_id, project, type, title, subtitle, facts, narrative, concepts,
        files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
       memorySessionId,
+      resolvedContentSessionId,
       project,
       observation.type,
       observation.title,
@@ -1877,27 +1886,36 @@ export class SessionStore {
     } | null,
     promptNumber?: number,
     discoveryTokens: number = 0,
-    overrideTimestampEpoch?: number
+    overrideTimestampEpoch?: number,
+    contentSessionId?: string
   ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
     // Use override timestamp if provided
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
     // Create transaction that wraps all operations
+    // Resolve content_session_id once for the entire batch
+    let resolvedContentSessionId = contentSessionId || null;
+    if (!resolvedContentSessionId) {
+      const row = this.db.prepare('SELECT content_session_id FROM sdk_sessions WHERE memory_session_id = ?').get(memorySessionId) as { content_session_id: string } | null;
+      resolvedContentSessionId = row?.content_session_id || null;
+    }
+
     const storeTx = this.db.transaction(() => {
       const observationIds: number[] = [];
 
       // 1. Store all observations
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
-        (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
+        (memory_session_id, content_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const observation of observations) {
         const result = obsStmt.run(
           memorySessionId,
+          resolvedContentSessionId,
           project,
           observation.type,
           observation.title,

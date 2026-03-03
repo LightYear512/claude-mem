@@ -55,7 +55,8 @@ export function storeObservation(
   observation: ObservationInput,
   promptNumber?: number,
   discoveryTokens: number = 0,
-  overrideTimestampEpoch?: number
+  overrideTimestampEpoch?: number,
+  contentSessionId?: string
 ): StoreObservationResult {
   // Use override timestamp if provided (for processing backlog messages with original timestamps)
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -72,15 +73,23 @@ export function storeObservation(
     return { id: existing.id, createdAtEpoch: existing.created_at_epoch };
   }
 
+  // Resolve content_session_id: use provided value, or look up from sdk_sessions
+  let resolvedContentSessionId = contentSessionId || null;
+  if (!resolvedContentSessionId) {
+    const row = db.prepare('SELECT content_session_id FROM sdk_sessions WHERE memory_session_id = ?').get(memorySessionId) as { content_session_id: string } | null;
+    resolvedContentSessionId = row?.content_session_id || null;
+  }
+
   const stmt = db.prepare(`
     INSERT INTO observations
-    (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
+    (memory_session_id, content_session_id, project, type, title, subtitle, facts, narrative, concepts,
      files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const result = stmt.run(
     memorySessionId,
+    resolvedContentSessionId,
     resolvedProject,
     observation.type,
     observation.title,

@@ -33,6 +33,7 @@ export interface GetObservationsByIdsOptions {
   orderBy?: 'date_desc' | 'date_asc';
   limit?: number;
   project?: string;
+  content_session_id?: string;
   type?: string | string[];
   concepts?: string | string[];
   files?: string | string[];

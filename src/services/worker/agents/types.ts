@@ -32,7 +32,8 @@ export interface WorkerRef {
 export interface ObservationSSEPayload {
   id: number;
   memory_session_id: string | null;
-  session_id: string;
+  content_session_id: string | null;
+  session_id: string;  // Alias for content_session_id (backward compat)
   type: string;
   title: string | null;
   subtitle: string | null;

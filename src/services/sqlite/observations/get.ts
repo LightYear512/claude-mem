@@ -31,7 +31,7 @@ export function getObservationsByIds(
 ): ObservationRecord[] {
   if (ids.length === 0) return [];
 
-  const { orderBy = 'date_desc', limit, project, type, concepts, files } = options;
+  const { orderBy = 'date_desc', limit, project, content_session_id, type, concepts, files } = options;
   const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
   const limitClause = limit ? `LIMIT ${limit}` : '';
 
@@ -44,6 +44,12 @@ export function getObservationsByIds(
   if (project) {
     additionalConditions.push('project = ?');
     params.push(project);
+  }
+
+  // Apply content_session_id filter
+  if (content_session_id) {
+    additionalConditions.push('content_session_id = ?');
+    params.push(content_session_id);
   }
 
   // Apply type filter
