@@ -136,6 +136,14 @@ export class SearchManager {
       resolvedSessionId = memId ?? (session_id as string);
     }
     const sessionFilter = resolvedSessionId ? { memory_session_id: resolvedSessionId } : {};
+
+    // When session_id is specified, skip project filtering — a session already implies
+    // a single project, so the project filter is redundant.  Worse, if the caller passes
+    // a mismatched project the query silently returns empty results.
+    if (resolvedSessionId) {
+      delete options.project;
+    }
+
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
@@ -177,8 +185,7 @@ export class SearchManager {
       }
 
       // Include project in the Chroma where clause to scope vector search.
-      // Without this, larger projects dominate the top-N results and smaller
-      // projects get crowded out before the post-hoc SQLite filter.
+      // Skipped when session_id is present (session already implies project).
       if (options.project) {
         const projectFilter = { project: options.project };
         whereFilter = whereFilter
