@@ -463,7 +463,7 @@ export async function aggressiveStartupCleanup(): Promise<void> {
         .map(p => `CommandLine LIKE ''%%${p}%%''`)
         .join(' OR ');
 
-      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter '(${wqlPatternConditions}) AND ProcessId != ${currentPid}' | Select-Object ProcessId, CommandLine, CreationDate | ConvertTo-Json"`;
+      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter '(${wqlPatternConditions}) AND ProcessId != ${currentPid}' | Select-Object ProcessId, ParentProcessId, CommandLine, CreationDate | ConvertTo-Json"`;
       const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, windowsHide: true });
 
       if (!stdout.trim() || stdout.trim() === 'null') {
@@ -475,9 +475,37 @@ export async function aggressiveStartupCleanup(): Promise<void> {
       const processList = Array.isArray(processes) ? processes : [processes];
       const now = Date.now();
 
+      // Build ancestor PID set: walk up from current process to avoid killing
+      // our own parent chain. On Windows, the hook runs as:
+      //   bash.exe → node.exe (bun-runner.js worker-service.cjs ...) → bun.exe (worker, process.pid)
+      // The parent's CommandLine contains "worker-service.cjs" and would match
+      // the cleanup pattern. Killing it with /T cascades to the current worker.
+      const ancestorPids = new Set<number>([currentPid]);
+      const pidToParent = new Map<number, number>();
+      for (const proc of processList) {
+        if (Number.isInteger(proc.ProcessId) && Number.isInteger(proc.ParentProcessId)) {
+          pidToParent.set(proc.ProcessId, proc.ParentProcessId);
+        }
+      }
+      // Walk up from process.ppid (if available) through the matched process list
+      let walkPid = process.ppid;
+      const maxWalk = 10; // prevent infinite loops
+      for (let i = 0; i < maxWalk && walkPid > 0; i++) {
+        ancestorPids.add(walkPid);
+        walkPid = pidToParent.get(walkPid) ?? 0;
+      }
+
+      if (ancestorPids.size > 1) {
+        logger.debug('SYSTEM', 'Ancestor PIDs excluded from cleanup', { ancestorPids: [...ancestorPids] });
+      }
+
       for (const proc of processList) {
         const pid = proc.ProcessId;
-        if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
+        if (!Number.isInteger(pid) || pid <= 0) continue;
+        if (ancestorPids.has(pid)) {
+          logger.debug('SYSTEM', 'Skipping ancestor process in cleanup', { pid, commandLine: (proc.CommandLine || '').substring(0, 100) });
+          continue;
+        }
 
         const commandLine = proc.CommandLine || '';
         const isAggressive = AGGRESSIVE_CLEANUP_PATTERNS.some(p => commandLine.includes(p));
@@ -520,7 +548,7 @@ export async function aggressiveStartupCleanup(): Promise<void> {
         const etime = match[2];
         const command = match[3];
 
-        if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
+        if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid || pid === process.ppid) continue;
 
         const isAggressive = AGGRESSIVE_CLEANUP_PATTERNS.some(p => command.includes(p));
 
