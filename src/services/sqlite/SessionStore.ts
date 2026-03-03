@@ -1414,11 +1414,11 @@ export class SessionStore {
    */
   getObservationsByIds(
     ids: number[],
-    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number; project?: string; type?: string | string[]; concepts?: string | string[]; files?: string | string[] } = {}
+    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number; project?: string; memory_session_id?: string; type?: string | string[]; concepts?: string | string[]; files?: string | string[] } = {}
   ): ObservationRecord[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit, project, type, concepts, files } = options;
+    const { orderBy = 'date_desc', limit, project, memory_session_id, type, concepts, files } = options;
     const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
     const limitClause = limit ? `LIMIT ${limit}` : '';
 
@@ -1426,6 +1426,12 @@ export class SessionStore {
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
     const additionalConditions: string[] = [];
+
+    // Apply session filter
+    if (memory_session_id) {
+      additionalConditions.push('memory_session_id = ?');
+      params.push(memory_session_id);
+    }
 
     // Apply project filter
     if (project) {
@@ -2096,21 +2102,29 @@ export class SessionStore {
    */
   getSessionSummariesByIds(
     ids: number[],
-    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number; project?: string } = {}
+    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number; project?: string; memory_session_id?: string } = {}
   ): SessionSummaryRecord[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit, project } = options;
+    const { orderBy = 'date_desc', limit, project, memory_session_id } = options;
     const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
     const limitClause = limit ? `LIMIT ${limit}` : '';
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
+    const additionalConditions: string[] = [];
 
-    // Apply project filter
-    const whereClause = project
-      ? `WHERE id IN (${placeholders}) AND project = ?`
+    if (memory_session_id) {
+      additionalConditions.push('memory_session_id = ?');
+      params.push(memory_session_id);
+    }
+    if (project) {
+      additionalConditions.push('project = ?');
+      params.push(project);
+    }
+
+    const whereClause = additionalConditions.length > 0
+      ? `WHERE id IN (${placeholders}) AND ${additionalConditions.join(' AND ')}`
       : `WHERE id IN (${placeholders})`;
-    if (project) params.push(project);
 
     const stmt = this.db.prepare(`
       SELECT * FROM session_summaries
@@ -2128,19 +2142,27 @@ export class SessionStore {
    */
   getUserPromptsByIds(
     ids: number[],
-    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number; project?: string } = {}
+    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number; project?: string; memory_session_id?: string } = {}
   ): UserPromptRecord[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit, project } = options;
+    const { orderBy = 'date_desc', limit, project, memory_session_id } = options;
     const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
     const limitClause = limit ? `LIMIT ${limit}` : '';
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
 
-    // Apply project filter
-    const projectFilter = project ? 'AND s.project = ?' : '';
-    if (project) params.push(project);
+    // Apply filters
+    const additionalFilters: string[] = [];
+    if (project) {
+      additionalFilters.push('s.project = ?');
+      params.push(project);
+    }
+    if (memory_session_id) {
+      additionalFilters.push('s.memory_session_id = ?');
+      params.push(memory_session_id);
+    }
+    const filterClause = additionalFilters.length > 0 ? `AND ${additionalFilters.join(' AND ')}` : '';
 
     const stmt = this.db.prepare(`
       SELECT
@@ -2149,7 +2171,7 @@ export class SessionStore {
         s.memory_session_id
       FROM user_prompts up
       JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
-      WHERE up.id IN (${placeholders}) ${projectFilter}
+      WHERE up.id IN (${placeholders}) ${filterClause}
       ORDER BY up.created_at_epoch ${orderClause}
       ${limitClause}
     `);

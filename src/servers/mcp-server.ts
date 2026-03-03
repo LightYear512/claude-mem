@@ -169,7 +169,8 @@ const tools = [
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
 3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
-NEVER fetch full details without filtering first. 10x token savings.`,
+NEVER fetch full details without filtering first. 10x token savings.
+CRITICAL: search() REQUIRES session_id. Pass value from "Current session" header, or "all" for cross-session.`,
     inputSchema: {
       type: 'object',
       properties: {}
@@ -204,7 +205,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Search query text' },
-        session_id: { type: 'string', description: 'Session ID from "Current session" context header. Always include for session-scoped search. Omit only for cross-session search.' },
+        session_id: { type: 'string', description: 'REQUIRED for session-scoped search. Pass the value from "Current session" header. Pass "all" for cross-session search.' },
         limit: { type: 'number', description: 'Max results (default 20)' },
         project: { type: 'string', description: 'Project name filter' },
         type: { type: 'string', description: 'Filter by type: observations, sessions, or prompts' },
@@ -217,6 +218,20 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
+      // Enforce session_id: if not provided, return error to prompt model to include it
+      if (!args.session_id) {
+        return {
+          content: [{
+            type: 'text',
+            text: 'ERROR: session_id is required. Pass the value from the "**Current session:**" header in your context for session-scoped search, or pass session_id="all" for cross-session search.'
+          }],
+          isError: true
+        };
+      }
+      // "all" means cross-session search — strip session_id so worker searches everything
+      if (args.session_id === 'all') {
+        delete args.session_id;
+      }
       const endpoint = TOOL_ENDPOINT_MAP['search'];
       return await callWorkerAPI(endpoint, args);
     }

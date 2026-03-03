@@ -31,12 +31,14 @@ Examples:
 
 The CLAUDE.md context header contains `**Current session:** <session-id>`. Use this as the default `session_id` filter on every search — unless the user explicitly asks to search across all sessions or a different time range.
 
+**CRITICAL: session_id is REQUIRED on every search call.** The server will reject calls without it.
+
 ```
-# Default: search only current session
+# Default: search only current session — ALWAYS pass session_id from "Current session" header
 search(query="...", session_id="<value from Current session header>", project="my-project")
 
 # Cross-session: user asks "what did we do last week?" or "across all sessions"
-search(query="...", project="my-project")  # omit session_id
+search(query="...", session_id="all", project="my-project")
 ```
 
 ## When to Use
@@ -44,8 +46,8 @@ search(query="...", project="my-project")  # omit session_id
 Use when users ask about PREVIOUS work:
 
 - "Did we already fix this?" → search current session first, then broaden if not found
-- "How did we solve X last time?" → omit session_id to search across sessions
-- "What happened last week?" → use dateStart/dateEnd, omit session_id
+- "How did we solve X last time?" → pass session_id="all" to search across sessions
+- "What happened last week?" → use dateStart/dateEnd, pass session_id="all"
 
 ## 3-Layer Workflow (ALWAYS Follow)
 
@@ -56,7 +58,7 @@ Use when users ask about PREVIOUS work:
 Use the `search` MCP tool:
 
 ```
-search(query="authentication", limit=20, project="my-project")
+search(query="authentication", session_id="<from Current session header>", limit=20, project="my-project")
 ```
 
 **Returns:** Table with IDs, timestamps, types, titles (~50-100 tokens/result)
@@ -73,7 +75,7 @@ search(query="authentication", limit=20, project="my-project")
 - `query` (string) - Search term
 - `limit` (number) - Max results, default 20, max 100
 - `project` (string) - Project name filter
-- `session_id` (string, optional) - **Hard filter** by memory_session_id. Use value from `**Current session:**` header in CLAUDE.md to isolate current session. Omit to search across all sessions.
+- `session_id` (string, **REQUIRED**) - Pass the value from `**Current session:**` header for session-scoped search. Pass `"all"` for cross-session search.
 - `type` (string, optional) - "observations", "sessions", or "prompts"
 - `obs_type` (string, optional) - Comma-separated: bugfix, feature, decision, discovery, change
 - `dateStart` (string, optional) - YYYY-MM-DD or epoch ms
@@ -128,16 +130,16 @@ get_observations(ids=[11131, 10942])
 
 ## Examples
 
-**Find recent bug fixes:**
+**Find recent bug fixes (current session):**
 
 ```
-search(query="bug", type="observations", obs_type="bugfix", limit=20, project="my-project")
+search(query="bug", session_id="<from Current session header>", type="observations", obs_type="bugfix", limit=20, project="my-project")
 ```
 
-**Find what happened last week:**
+**Find what happened last week (cross-session):**
 
 ```
-search(type="observations", dateStart="2025-11-11", limit=20, project="my-project")
+search(query="last week work", session_id="all", dateStart="2025-11-11", limit=20, project="my-project")
 ```
 
 **Understand context around a discovery:**

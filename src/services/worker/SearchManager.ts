@@ -186,7 +186,16 @@ export class SearchManager {
           : projectFilter;
       }
 
-      // Step 1: Chroma semantic search with optional type + project filter
+      // Include session_id in the Chroma where clause for session isolation.
+      // Without this, searches return results from all sessions regardless of session_id filter.
+      if (resolvedSessionId) {
+        const sessionFilterChroma = { memory_session_id: resolvedSessionId };
+        whereFilter = whereFilter
+          ? { $and: [whereFilter, sessionFilterChroma] }
+          : sessionFilterChroma;
+      }
+
+      // Step 1: Chroma semantic search with optional type + project + session filter
       const chromaResults = await this.queryChroma(query, 100, whereFilter);
       chromaSucceeded = true; // Chroma didn't throw error
       logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
@@ -227,10 +236,10 @@ export class SearchManager {
           observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
         }
         if (sessionIds.length > 0) {
-          sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, { orderBy: 'date_desc', limit: options.limit, project: options.project });
+          sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, { ...options, ...sessionFilter });
         }
         if (promptIds.length > 0) {
-          prompts = this.sessionStore.getUserPromptsByIds(promptIds, { orderBy: 'date_desc', limit: options.limit, project: options.project });
+          prompts = this.sessionStore.getUserPromptsByIds(promptIds, { ...options, ...sessionFilter });
         }
 
         logger.debug('SEARCH', 'Hydrated results from SQLite', { observations: observations.length, sessions: sessions.length, prompts: prompts.length });
