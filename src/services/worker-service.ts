@@ -1029,11 +1029,12 @@ export class WorkerService {
       this.staleSessionReaperInterval = null;
     }
 
-    // Wait for vector backfill to complete (with a short grace period)
+    // Wait for vector backfill to complete (with a short grace period).
+    // Backfill is re-entrant — it will resume on next startup, so 2s is sufficient.
     if (this.backfillPromise) {
       await Promise.race([
         this.backfillPromise,
-        new Promise<void>((resolve) => setTimeout(resolve, 5000))
+        new Promise<void>((resolve) => setTimeout(resolve, 2000))
       ]);
     }
 

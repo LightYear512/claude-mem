@@ -412,12 +412,23 @@ export class ChromaMcpManager {
     }
 
     // Close transport first (kills subprocess via SIGTERM) before client
-    // to avoid hanging on a stuck process.
+    // to avoid hanging on a stuck process. Timeout each to prevent hanging
+    // on blocked stdio streams during active operations.
     if (this.transport) {
-      try { await this.transport.close(); } catch { /* already dead */ }
+      try {
+        await Promise.race([
+          this.transport.close(),
+          new Promise<void>(resolve => setTimeout(resolve, 2000))
+        ]);
+      } catch { /* already dead */ }
     }
     if (this.client) {
-      try { await this.client.close(); } catch { /* already dead */ }
+      try {
+        await Promise.race([
+          this.client.close(),
+          new Promise<void>(resolve => setTimeout(resolve, 2000))
+        ]);
+      } catch { /* already dead */ }
     }
 
     // Kill any surviving grandchildren (e.g., Python chroma-mcp when uvx
@@ -427,6 +438,28 @@ export class ChromaMcpManager {
         process.kill(pid, 'SIGKILL');
         logger.debug('CHROMA_MCP', 'Killed surviving child process', { pid });
       } catch { /* already dead */ }
+    }
+
+    // Defense-in-depth: kill ALL chroma-mcp processes by image name.
+    // The PID-based tree kill above can miss orphans from previous crashed
+    // workers, failed connection attempts, or broken parent-child chains
+    // (Windows process tree is 6 levels deep: cmd→uvx→uv→chroma-mcp→python→python).
+    if (process.platform === 'win32') {
+      try {
+        execSync('taskkill /F /FI "IMAGENAME eq chroma-mcp.exe"', {
+          timeout: 3000,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true
+        });
+        logger.debug('CHROMA_MCP', 'Killed all chroma-mcp.exe processes by image name');
+      } catch { /* no matching processes or already dead */ }
+    } else {
+      try {
+        execSync('pkill -f chroma-mcp || true', {
+          timeout: 3000,
+          stdio: ['pipe', 'pipe', 'pipe']
+        });
+      } catch { /* no matching processes */ }
     }
 
     this.client = null;

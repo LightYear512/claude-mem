@@ -277,9 +277,25 @@ export class Server {
         // Unix or standalone Windows - handle shutdown ourselves
         // Use a hard timeout to prevent deadlock if graceful shutdown hangs
         // (e.g. SDK agent generator promise never settles on abort)
-        const SHUTDOWN_TIMEOUT_MS = 10_000;
+        // Budget: backfill(2s) + chroma(4s) + sessions(4s) + mcp(2s) + db(2s) + forceKill(5s) ≈ 19s
+        const SHUTDOWN_TIMEOUT_MS = 18_000;
         const forceExitTimer = setTimeout(() => {
-          logger.warn('SYSTEM', 'Graceful shutdown timed out, forcing exit');
+          logger.warn('SYSTEM', 'Graceful shutdown timed out, force killing chroma-mcp before exit');
+          // Last-resort: kill chroma-mcp by name before exiting, so it doesn't
+          // survive as an orphan even if graceful shutdown completely failed.
+          try {
+            if (process.platform === 'win32') {
+              require('child_process').execSync(
+                'taskkill /IM chroma-mcp.exe /T /F',
+                { timeout: 3000, stdio: 'ignore', windowsHide: true }
+              );
+            } else {
+              require('child_process').execSync(
+                'pkill -f chroma-mcp || true',
+                { timeout: 3000, stdio: 'ignore' }
+              );
+            }
+          } catch { /* best effort — process may not exist */ }
           process.exit(0);
         }, SHUTDOWN_TIMEOUT_MS);
         forceExitTimer.unref();
