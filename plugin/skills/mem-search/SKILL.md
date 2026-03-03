@@ -1,19 +1,51 @@
 ---
 name: mem-search
 description: Search claude-mem's persistent cross-session memory database. Use when user asks "did we already solve this?", "how did we do X last time?", or needs work from previous sessions.
+argument-hint: "[session:current | session:all | session:id] <query>"
 ---
 
 # Memory Search
 
 Search past work across all sessions. Simple workflow: search -> filter -> fetch.
 
+## Argument Parsing
+
+When invoked as `/mem-search <args>`, parse the arguments. The `session:` prefix controls scope, followed by the required query.
+
+- **`<query>`**: Search for `<query>` within current session (default: `session:current`)
+- **`session:current <query>`**: Explicitly search current session
+- **`session:all <query>`**: Search across ALL sessions (omit session_id filter)
+- **`session:<id> <query>`**: Search within the specified session
+
+Examples:
+```
+/mem-search authentication                      → search "authentication" in current session
+/mem-search session:current fix all bugs        → search "fix all bugs" in current session
+/mem-search session:all authentication          → search across all sessions
+/mem-search session:abc12345 bug                → search "bug" in session abc12345
+```
+
+## Session Scope (Default Behavior)
+
+**Always search within the current session by default.**
+
+The CLAUDE.md context header contains `**Current session:** <session-id>`. Use this as the default `session_id` filter on every search — unless the user explicitly asks to search across all sessions or a different time range.
+
+```
+# Default: search only current session
+search(query="...", session_id="<value from Current session header>", project="my-project")
+
+# Cross-session: user asks "what did we do last week?" or "across all sessions"
+search(query="...", project="my-project")  # omit session_id
+```
+
 ## When to Use
 
-Use when users ask about PREVIOUS sessions (not current conversation):
+Use when users ask about PREVIOUS work:
 
-- "Did we already fix this?"
-- "How did we solve X last time?"
-- "What happened last week?"
+- "Did we already fix this?" → search current session first, then broaden if not found
+- "How did we solve X last time?" → omit session_id to search across sessions
+- "What happened last week?" → use dateStart/dateEnd, omit session_id
 
 ## 3-Layer Workflow (ALWAYS Follow)
 
@@ -41,6 +73,7 @@ search(query="authentication", limit=20, project="my-project")
 - `query` (string) - Search term
 - `limit` (number) - Max results, default 20, max 100
 - `project` (string) - Project name filter
+- `session_id` (string, optional) - **Hard filter** by memory_session_id. Use value from `**Current session:**` header in CLAUDE.md to isolate current session. Omit to search across all sessions.
 - `type` (string, optional) - "observations", "sessions", or "prompts"
 - `obs_type` (string, optional) - Comma-separated: bugfix, feature, decision, discovery, change
 - `dateStart` (string, optional) - YYYY-MM-DD or epoch ms

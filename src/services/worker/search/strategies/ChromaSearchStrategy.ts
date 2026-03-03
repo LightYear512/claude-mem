@@ -23,10 +23,13 @@ import {
 } from '../types.js';
 import { ChromaSync } from '../../../sync/ChromaSync.js';
 import { SessionStore } from '../../../sqlite/SessionStore.js';
+import { ContextBooster } from '../ContextBooster.js';
+import type { WorkContext } from '../../../sqlite/work-context/types.js';
 import { logger } from '../../../../utils/logger.js';
 
 export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchStrategy {
   readonly name = 'chroma';
+  private contextBooster = new ContextBooster();
 
   constructor(
     private chromaSync: ChromaSync,
@@ -40,7 +43,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
     return !!options.query && !!this.chromaSync;
   }
 
-  async search(options: StrategySearchOptions): Promise<StrategySearchResult> {
+  async search(options: StrategySearchOptions, workContext?: WorkContext, boostWeight?: number): Promise<StrategySearchResult> {
     const {
       query,
       searchType = 'all',
@@ -93,10 +96,19 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       }
 
       // Step 2: Filter by recency (90 days)
-      const recentItems = this.filterByRecency(chromaResults);
+      let recentItems = this.filterByRecency(chromaResults);
       logger.debug('SEARCH', 'ChromaSearchStrategy: Filtered by recency', {
         count: recentItems.length
       });
+
+      // Step 2.5: Context-aware re-ranking (if work context provided)
+      if (workContext && recentItems.length > 1) {
+        recentItems = this.contextBooster.boost(recentItems, workContext, boostWeight);
+        logger.debug('SEARCH', 'ChromaSearchStrategy: Applied context boost', {
+          sessionId: workContext.contentSessionId,
+          boostWeight: boostWeight ?? 0.3
+        });
+      }
 
       // Step 3: Categorize by document type
       const categorized = this.categorizeByDocType(recentItems, {

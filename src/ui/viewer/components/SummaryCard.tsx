@@ -58,6 +58,19 @@ export function SummaryCard({ summary }: SummaryCardProps) {
         <time className="summary-meta-date" dateTime={new Date(summary.created_at_epoch).toISOString()}>
           {date}
         </time>
+        {summary.session_id && (
+          <>
+            <span className="summary-meta-divider">•</span>
+            <span
+              className="meta-session-id"
+              title={`${t('observation.session')}: ${summary.session_id}\n(click to copy)`}
+              onClick={() => navigator.clipboard.writeText(summary.session_id)}
+              style={{ cursor: 'pointer', opacity: 0.6 }}
+            >
+              🔑 {summary.session_id.slice(0, 8)}
+            </span>
+          </>
+        )}
       </footer>
     </article>
   );

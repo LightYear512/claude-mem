@@ -261,6 +261,7 @@ export interface SearchFilters {
   concepts?: string | string[];
   files?: string | string[];
   dateRange?: DateRange;
+  memory_session_id?: string;
 }
 
 export interface SearchOptions extends SearchFilters {

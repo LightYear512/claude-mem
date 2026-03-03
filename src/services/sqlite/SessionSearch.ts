@@ -186,6 +186,12 @@ export class SessionSearch {
   ): string {
     const conditions: string[] = [];
 
+    // Session filter (hard isolation by memory_session_id)
+    if (filters.memory_session_id) {
+      conditions.push(`${tableAlias}.memory_session_id = ?`);
+      params.push(filters.memory_session_id);
+    }
+
     // Project filter
     if (filters.project) {
       conditions.push(`${tableAlias}.project = ?`);

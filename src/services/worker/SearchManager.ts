@@ -31,10 +31,14 @@ import {
   SEARCH_CONSTANTS
 } from './search/index.js';
 import type { TimelineData } from './search/index.js';
+import { ContextBooster } from './search/ContextBooster.js';
+import { getWorkContext } from '../sqlite/work-context/get.js';
+import type { WorkContext } from '../sqlite/work-context/types.js';
 
 export class SearchManager {
   private orchestrator: SearchOrchestrator;
   private timelineBuilder: TimelineBuilder;
+  private contextBooster = new ContextBooster();
 
   constructor(
     private sessionSearch: SessionSearch,
@@ -123,7 +127,15 @@ export class SearchManager {
   async search(args: any): Promise<any> {
     // Normalize URL-friendly params to internal format
     const normalized = this.normalizeParams(args);
-    const { query, type, obs_type, concepts, files, format, ...options } = normalized;
+    const { query, type, obs_type, concepts, files, format, session_id, ...options } = normalized;
+    // session_id → hard filter by memory_session_id (not just boosting)
+    // The input may be either a memory_session_id or content_session_id — translate if needed
+    let resolvedSessionId: string | undefined;
+    if (session_id) {
+      const memId = this.getMemorySessionId(session_id as string);
+      resolvedSessionId = memId ?? (session_id as string);
+    }
+    const sessionFilter = resolvedSessionId ? { memory_session_id: resolvedSessionId } : {};
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
@@ -138,15 +150,15 @@ export class SearchManager {
     // This path enables date filtering which Chroma cannot do (requires direct SQLite access)
     if (!query) {
       logger.debug('SEARCH', 'Filter-only query (no query text), using direct SQLite filtering', { enablesDateFilters: true });
-      const obsOptions = { ...options, type: obs_type, concepts, files };
+      const obsOptions = { ...options, ...sessionFilter, type: obs_type, concepts, files };
       if (searchObservations) {
         observations = this.sessionSearch.searchObservations(undefined, obsOptions);
       }
       if (searchSessions) {
-        sessions = this.sessionSearch.searchSessions(undefined, options);
+        sessions = this.sessionSearch.searchSessions(undefined, { ...options, ...sessionFilter });
       }
       if (searchPrompts) {
-        prompts = this.sessionSearch.searchUserPrompts(undefined, options);
+        prompts = this.sessionSearch.searchUserPrompts(undefined, { ...options, ...sessionFilter });
       }
     }
     // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
@@ -210,8 +222,8 @@ export class SearchManager {
 
         // Step 4: Hydrate from SQLite with additional filters
         if (obsIds.length > 0) {
-          // Apply obs_type, concepts, files filters if provided
-          const obsOptions = { ...options, type: obs_type, concepts, files };
+          // Apply obs_type, concepts, files, and session_id filters if provided
+          const obsOptions = { ...options, ...sessionFilter, type: obs_type, concepts, files };
           observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
         }
         if (sessionIds.length > 0) {
@@ -235,6 +247,22 @@ export class SearchManager {
       observations = [];
       sessions = [];
       prompts = [];
+    }
+
+    // Context-aware re-ranking: boost results matching current session's work context
+    if (normalized.session_id && observations.length > 1) {
+      try {
+        const workCtx = getWorkContext(this.sessionStore.db, normalized.session_id as string);
+        if (workCtx) {
+          observations = this.contextBooster.boostObservations(observations, workCtx);
+          logger.debug('SEARCH', 'Applied context boost in SearchManager', {
+            sessionId: normalized.session_id,
+            observationCount: observations.length
+          });
+        }
+      } catch (error) {
+        logger.debug('SEARCH', 'Failed to apply context boost', {}, error as Error);
+      }
     }
 
     const totalResults = observations.length + sessions.length + prompts.length;
@@ -1624,6 +1652,24 @@ export class SearchManager {
         text: lines.join('\n')
       }]
     };
+  }
+
+  /**
+   * Tool handler: get_timeline_by_query
+   */
+  /**
+   * Look up memory_session_id for a given content_session_id.
+   * Used by context injection to embed current session ID in CLAUDE.md.
+   */
+  getMemorySessionId(contentSessionId: string): string | null {
+    try {
+      const row = (this.sessionStore.db as any).prepare(
+        'SELECT memory_session_id FROM sdk_sessions WHERE content_session_id = ? AND memory_session_id IS NOT NULL LIMIT 1'
+      ).get(contentSessionId) as { memory_session_id: string } | null;
+      return row?.memory_session_id ?? null;
+    } catch {
+      return null;
+    }
   }
 
   /**

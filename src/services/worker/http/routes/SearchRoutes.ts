@@ -218,6 +218,7 @@ export class SearchRoutes extends BaseRouteHandler {
     // Support both legacy `project` and new `projects` parameter
     const projectsParam = (req.query.projects as string) || (req.query.project as string);
     const useColors = req.query.colors === 'true';
+    const contentSessionId = req.query.session_id as string | undefined;
 
     if (!projectsParam) {
       this.badRequest(res, 'Project(s) parameter is required');
@@ -249,9 +250,17 @@ export class SearchRoutes extends BaseRouteHandler {
       useColors
     );
 
+    // Prepend current session ID header (markdown only, not colored terminal output)
+    // Use content_session_id directly — always available, even for new sessions
+    // The search API will translate it to memory_session_id internally
+    let finalText = contextText;
+    if (!useColors && contentSessionId) {
+      finalText = `**Current session:** ${contentSessionId}\n\n${contextText}`;
+    }
+
     // Return as plain text
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.send(contextText);
+    res.send(finalText);
   });
 
   /**

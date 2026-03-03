@@ -199,10 +199,21 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'search',
-    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, type, obs_type, dateStart, dateEnd, offset, orderBy',
+    description: 'Step 1: Search memory. Returns index with IDs. IMPORTANT: Always pass session_id from the "Current session" header in context to scope results to current session. Omit session_id only when user explicitly asks to search across all sessions.',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        query: { type: 'string', description: 'Search query text' },
+        session_id: { type: 'string', description: 'Session ID from "Current session" context header. Always include for session-scoped search. Omit only for cross-session search.' },
+        limit: { type: 'number', description: 'Max results (default 20)' },
+        project: { type: 'string', description: 'Project name filter' },
+        type: { type: 'string', description: 'Filter by type: observations, sessions, or prompts' },
+        obs_type: { type: 'string', description: 'Filter observation type: bugfix, feature, decision, discovery, change' },
+        dateStart: { type: 'string', description: 'Start date (YYYY-MM-DD)' },
+        dateEnd: { type: 'string', description: 'End date (YYYY-MM-DD)' },
+        offset: { type: 'number', description: 'Skip N results' },
+        orderBy: { type: 'string', description: 'date_desc (default), date_asc, relevance' }
+      },
       additionalProperties: true
     },
     handler: async (args: any) => {
