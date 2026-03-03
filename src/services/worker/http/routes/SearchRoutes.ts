@@ -251,12 +251,11 @@ export class SearchRoutes extends BaseRouteHandler {
     );
 
     // Prepend current session ID header (markdown only, not colored terminal output)
+    // Use content_session_id directly — always available, even for new sessions
+    // The search API will translate it to memory_session_id internally
     let finalText = contextText;
     if (!useColors && contentSessionId) {
-      const memorySessionId = this.searchManager.getMemorySessionId(contentSessionId);
-      if (memorySessionId) {
-        finalText = `**Current session:** ${memorySessionId}\n\n${contextText}`;
-      }
+      finalText = `**Current session:** ${contentSessionId}\n\n${contextText}`;
     }
 
     // Return as plain text

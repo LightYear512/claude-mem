@@ -166,6 +166,16 @@ export function ObservationCard({ observation }: ObservationCardProps) {
       <div className="card-meta">
         <span className="meta-date">
           #{observation.id} • {date}
+          {(observation.content_session_id || observation.memory_session_id) && (
+            <span
+              className="meta-session-id"
+              title={`${t('observation.session')}: ${observation.content_session_id || observation.memory_session_id}\n(click to copy)`}
+              onClick={() => navigator.clipboard.writeText(observation.content_session_id || observation.memory_session_id)}
+              style={{ cursor: 'pointer', opacity: 0.6 }}
+            >
+              {' '}• 🔑 {(observation.content_session_id || observation.memory_session_id).slice(0, 8)}
+            </span>
+          )}
           {(() => {
             const summary = getFilesSummary(filesRead, filesModified);
             if (!summary) return null;

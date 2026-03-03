@@ -1,11 +1,29 @@
 ---
 name: mem-search
 description: Search claude-mem's persistent cross-session memory database. Use when user asks "did we already solve this?", "how did we do X last time?", or needs work from previous sessions.
+argument-hint: "[session:current | session:all | session:id] <query>"
 ---
 
 # Memory Search
 
 Search past work across all sessions. Simple workflow: search -> filter -> fetch.
+
+## Argument Parsing
+
+When invoked as `/mem-search <args>`, parse the arguments. The `session:` prefix controls scope, followed by the required query.
+
+- **`<query>`**: Search for `<query>` within current session (default: `session:current`)
+- **`session:current <query>`**: Explicitly search current session
+- **`session:all <query>`**: Search across ALL sessions (omit session_id filter)
+- **`session:<id> <query>`**: Search within the specified session
+
+Examples:
+```
+/mem-search authentication                      → search "authentication" in current session
+/mem-search session:current fix all bugs        → search "fix all bugs" in current session
+/mem-search session:all authentication          → search across all sessions
+/mem-search session:abc12345 bug                → search "bug" in session abc12345
+```
 
 ## Session Scope (Default Behavior)
 

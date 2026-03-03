@@ -129,7 +129,13 @@ export class SearchManager {
     const normalized = this.normalizeParams(args);
     const { query, type, obs_type, concepts, files, format, session_id, ...options } = normalized;
     // session_id → hard filter by memory_session_id (not just boosting)
-    const sessionFilter = session_id ? { memory_session_id: session_id as string } : {};
+    // The input may be either a memory_session_id or content_session_id — translate if needed
+    let resolvedSessionId: string | undefined;
+    if (session_id) {
+      const memId = this.getMemorySessionId(session_id as string);
+      resolvedSessionId = memId ?? (session_id as string);
+    }
+    const sessionFilter = resolvedSessionId ? { memory_session_id: resolvedSessionId } : {};
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];

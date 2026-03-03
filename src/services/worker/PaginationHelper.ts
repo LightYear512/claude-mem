@@ -70,15 +70,38 @@ export class PaginationHelper {
 
   /**
    * Get paginated observations
+   * Joins sdk_sessions to include content_session_id for display
    */
   getObservations(offset: number, limit: number, project?: string): PaginatedResult<Observation> {
-    const result = this.paginate<Observation>(
-      'observations',
-      'id, memory_session_id, project, type, title, subtitle, narrative, text, facts, concepts, files_read, files_modified, prompt_number, created_at, created_at_epoch',
+    const db = this.dbManager.getSessionStore().db;
+
+    let query = `
+      SELECT
+        o.id, o.memory_session_id, o.project, o.type, o.title, o.subtitle,
+        o.narrative, o.text, o.facts, o.concepts, o.files_read, o.files_modified,
+        o.prompt_number, o.created_at, o.created_at_epoch,
+        s.content_session_id
+      FROM observations o
+      LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+    `;
+    const params: any[] = [];
+
+    if (project) {
+      query += ' WHERE o.project = ?';
+      params.push(project);
+    }
+
+    query += ' ORDER BY o.created_at_epoch DESC LIMIT ? OFFSET ?';
+    params.push(limit + 1, offset);
+
+    const results = db.prepare(query).all(...params) as Observation[];
+
+    const result = {
+      items: results.slice(0, limit),
+      hasMore: results.length > limit,
       offset,
-      limit,
-      project
-    );
+      limit
+    };
 
     // Strip project paths from file paths before returning
     return {
@@ -97,6 +120,7 @@ export class PaginationHelper {
       SELECT
         ss.id,
         s.content_session_id as session_id,
+        s.memory_session_id,
         ss.request,
         ss.investigated,
         ss.learned,
