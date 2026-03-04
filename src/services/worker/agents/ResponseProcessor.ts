@@ -107,7 +107,8 @@ export async function processAgentResponse(
     summaryForStore,
     session.lastPromptNumber,
     discoveryTokens,
-    originalTimestamp ?? undefined
+    originalTimestamp ?? undefined,
+    session.contentSessionId
   );
 
   // Log storage result with IDs for end-to-end traceability
@@ -227,6 +228,7 @@ async function syncAndBroadcastObservations(
     broadcastObservation(worker, {
       id: obsId,
       memory_session_id: session.memorySessionId,
+      content_session_id: session.contentSessionId,
       session_id: session.contentSessionId,
       type: obs.type,
       title: obs.title,

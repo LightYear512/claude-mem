@@ -60,6 +60,14 @@ SessionStart → UserPromptSubmit → PostToolUse → Stop → SessionEnd
 - 实时内存流可视化,网址 http://localhost:37777
 - 无限滚动分页和自动去重
 
+**OpenCode 插件** (`src/integrations/opencode/` → `dist/opencode-plugin/index.js`)
+- 将 OpenCode 的插件事件桥接到同一个 worker HTTP API
+- 使用 `chat.message` hook 同步捕获用户消息（在 DB 写入之前触发，保证顺序确定性）
+- 通过 `tool.execute.after` 拦截器异步捕获工具调用（fire-and-forget）
+- 通过 `session.status idle` 触发摘要生成
+- 上下文注入写入项目根目录的 `AGENTS.md` 文件（而非直接注入推理）
+- 构建后部署到 `~/.config/opencode/plugins/claude-mem.js`
+
 ---
 
 ## 常用命令
@@ -112,6 +120,7 @@ npm run test:search      # 搜索功能测试
 npm run test:context     # 上下文生成测试
 npm run test:infra       # 基础设施测试
 npm run test:server      # 服务器测试
+npm run test:opencode    # OpenCode 集成测试
 
 # 运行单个测试文件
 bun test tests/sqlite/observations.test.ts
@@ -186,12 +195,14 @@ npm run translate:tier4  # 意大利语、希腊语、匈牙利语、芬兰语�
 - `src/sdk/` - Claude Agent SDK 集成
 - `src/ui/viewer/` - React 查看器 UI
 - `src/utils/` - 共享工具
+- `src/integrations/opencode/` - OpenCode 插件集成
 
 **构建输出:**
 - `plugin/scripts/` - 编译后的可执行脚本
 - `plugin/ui/viewer.html` - 打包的查看器 UI
 - `plugin/hooks/hooks.json` - 钩子配置
 - `plugin/skills/` - 技能定义
+- `dist/opencode-plugin/index.js` - 编译后的 OpenCode 插件
 
 **用户数据:**
 - `~/.claude-mem/claude-mem.db` - SQLite 数据库

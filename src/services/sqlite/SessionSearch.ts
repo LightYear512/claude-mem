@@ -198,6 +198,12 @@ export class SessionSearch {
       params.push(filters.project);
     }
 
+    // Content session ID filter
+    if (filters.content_session_id) {
+      conditions.push(`${tableAlias}.content_session_id = ?`);
+      params.push(filters.content_session_id);
+    }
+
     // Type filter (for observations only)
     if (filters.type) {
       if (Array.isArray(filters.type)) {

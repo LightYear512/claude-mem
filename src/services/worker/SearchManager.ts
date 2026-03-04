@@ -111,6 +111,12 @@ export class SearchManager {
       delete normalized.dateEnd;
     }
 
+    // Map session_id to content_session_id (API uses session_id, internal uses content_session_id)
+    if (normalized.session_id && !normalized.content_session_id) {
+      normalized.content_session_id = normalized.session_id;
+      delete normalized.session_id;
+    }
+
     // Parse isFolder boolean from string
     if (normalized.isFolder === 'true') {
       normalized.isFolder = true;

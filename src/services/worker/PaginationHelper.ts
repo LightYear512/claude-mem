@@ -80,7 +80,7 @@ export class PaginationHelper {
         o.id, o.memory_session_id, o.project, o.type, o.title, o.subtitle,
         o.narrative, o.text, o.facts, o.concepts, o.files_read, o.files_modified,
         o.prompt_number, o.created_at, o.created_at_epoch,
-        s.content_session_id
+        COALESCE(o.content_session_id, s.content_session_id) as content_session_id
       FROM observations o
       LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     `;

@@ -53,6 +53,7 @@ export class SessionStore {
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
     this.createBudgetTables();
+    this.addContentSessionIdToObservations();
   }
 
   /**
@@ -874,6 +875,37 @@ export class SessionStore {
     }
 
     logger.debug('DB', 'Successfully created budget tracking tables');
+  }
+
+  /**
+   * Add content_session_id column to observations (migration 25)
+   * Denormalizes the Claude Code session ID into observations for direct filtering,
+   * eliminating the need to JOIN through sdk_sessions for session-scoped queries.
+   */
+  private addContentSessionIdToObservations(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(25) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const tableInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasColumn = tableInfo.some(col => col.name === 'content_session_id');
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE observations ADD COLUMN content_session_id TEXT');
+
+      // Backfill from sdk_sessions
+      this.db.run(`
+        UPDATE observations SET content_session_id = (
+          SELECT s.content_session_id FROM sdk_sessions s
+          WHERE s.memory_session_id = observations.memory_session_id
+        ) WHERE content_session_id IS NULL
+      `);
+
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_content_session_id ON observations(content_session_id)');
+
+      logger.debug('DB', 'Added content_session_id column to observations with backfill and index');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
   }
 
   /**
@@ -1749,7 +1781,8 @@ export class SessionStore {
     },
     promptNumber?: number,
     discoveryTokens: number = 0,
-    overrideTimestampEpoch?: number
+    overrideTimestampEpoch?: number,
+    contentSessionId?: string
   ): { id: number; createdAtEpoch: number } {
     // Use override timestamp if provided (for processing backlog messages with original timestamps)
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
@@ -1762,15 +1795,23 @@ export class SessionStore {
       return { id: existing.id, createdAtEpoch: existing.created_at_epoch };
     }
 
+    // Resolve content_session_id: use provided value, or look up from sdk_sessions
+    let resolvedContentSessionId = contentSessionId || null;
+    if (!resolvedContentSessionId) {
+      const row = this.db.prepare('SELECT content_session_id FROM sdk_sessions WHERE memory_session_id = ?').get(memorySessionId) as { content_session_id: string } | null;
+      resolvedContentSessionId = row?.content_session_id || null;
+    }
+
     const stmt = this.db.prepare(`
       INSERT INTO observations
-      (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
+      (memory_session_id, content_session_id, project, type, title, subtitle, facts, narrative, concepts,
        files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
       memorySessionId,
+      resolvedContentSessionId,
       project,
       observation.type,
       observation.title,
@@ -1883,27 +1924,36 @@ export class SessionStore {
     } | null,
     promptNumber?: number,
     discoveryTokens: number = 0,
-    overrideTimestampEpoch?: number
+    overrideTimestampEpoch?: number,
+    contentSessionId?: string
   ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
     // Use override timestamp if provided
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
     // Create transaction that wraps all operations
+    // Resolve content_session_id once for the entire batch
+    let resolvedContentSessionId = contentSessionId || null;
+    if (!resolvedContentSessionId) {
+      const row = this.db.prepare('SELECT content_session_id FROM sdk_sessions WHERE memory_session_id = ?').get(memorySessionId) as { content_session_id: string } | null;
+      resolvedContentSessionId = row?.content_session_id || null;
+    }
+
     const storeTx = this.db.transaction(() => {
       const observationIds: number[] = [];
 
       // 1. Store all observations
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
-        (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
+        (memory_session_id, content_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const observation of observations) {
         const result = obsStmt.run(
           memorySessionId,
+          resolvedContentSessionId,
           project,
           observation.type,
           observation.title,

@@ -204,6 +204,7 @@ export interface SDKSessionRow {
 export interface ObservationRow {
   id: number;
   memory_session_id: string;
+  content_session_id: string | null;
   project: string;
   text: string | null;
   type: 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change';
@@ -257,6 +258,7 @@ export interface DateRange {
 
 export interface SearchFilters {
   project?: string;
+  content_session_id?: string;
   type?: ObservationRow['type'] | ObservationRow['type'][];
   concepts?: string | string[];
   files?: string | string[];

@@ -37,6 +37,7 @@ export class MigrationRunner {
     this.addSessionCustomTitleColumn();
     this.createBudgetTables();
     this.createSessionWorkContextTable();
+    this.addContentSessionIdToObservations();
   }
 
   /**
@@ -1126,5 +1127,36 @@ export class MigrationRunner {
     }
 
     logger.debug('DB', 'Successfully created session_work_context table');
+  }
+
+  /**
+   * Add content_session_id column to observations (migration 026)
+   * Denormalizes the Claude Code session ID into observations for direct filtering,
+   * eliminating the need to JOIN through sdk_sessions for session-scoped queries.
+   */
+  private addContentSessionIdToObservations(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(26) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const tableInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasColumn = tableInfo.some(col => col.name === 'content_session_id');
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE observations ADD COLUMN content_session_id TEXT');
+
+      // Backfill from sdk_sessions
+      this.db.run(`
+        UPDATE observations SET content_session_id = (
+          SELECT s.content_session_id FROM sdk_sessions s
+          WHERE s.memory_session_id = observations.memory_session_id
+        ) WHERE content_session_id IS NULL
+      `);
+
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_content_session_id ON observations(content_session_id)');
+
+      logger.debug('DB', 'Added content_session_id column to observations with backfill and index');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
   }
 }

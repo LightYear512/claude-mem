@@ -83,6 +83,7 @@
     "test:context": "bun test tests/context/",
     "test:infra": "bun test tests/infrastructure/",
     "test:server": "bun test tests/server/",
+    "test:opencode": "bun test tests/integrations/opencode/",
     "prepublishOnly": "npm run build",
     "release": "np",
     "release:patch": "np patch --no-cleanup",
