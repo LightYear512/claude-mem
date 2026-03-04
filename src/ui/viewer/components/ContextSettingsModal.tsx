@@ -676,13 +676,13 @@ export function ContextSettingsModal({
                 tooltip={t('settings.aiProviderTooltip')}
               >
                 <select
-                  value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
+                  value={formState.CLAUDE_MEM_PROVIDER || 'dashscope'}
                   onChange={(e) => updateSetting('CLAUDE_MEM_PROVIDER', e.target.value)}
                 >
+                  <option value="dashscope">{t('settings.dashscopeOption')}</option>
                   <option value="claude">{t('settings.claudeOption')}</option>
                   <option value="gemini">{t('settings.geminiOption')}</option>
                   <option value="openrouter">{t('settings.openrouterOption')}</option>
-                  <option value="dashscope">{t('settings.dashscopeOption')}</option>
                 </select>
               </FormField>
 
@@ -899,11 +899,11 @@ export function ContextSettingsModal({
                 tooltip={t('settings.summaryLanguageTooltip')}
               >
                 <select
-                  value={formState.CLAUDE_MEM_MODE || 'code'}
+                  value={formState.CLAUDE_MEM_MODE || 'code--zh'}
                   onChange={(e) => updateSetting('CLAUDE_MEM_MODE', e.target.value)}
                 >
-                  <option value="code">English (Default)</option>
-                  <option value="code--zh">中文 (Chinese)</option>
+                  <option value="code--zh">中文 (Chinese) (Default)</option>
+                  <option value="code">English</option>
                   <option value="code--ja">日本語 (Japanese)</option>
                   <option value="code--ko">한국어 (Korean)</option>
                   <option value="code--es">Español (Spanish)</option>

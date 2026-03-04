@@ -9,7 +9,7 @@ export const DEFAULT_SETTINGS = {
   CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
 
   // AI Provider Configuration
-  CLAUDE_MEM_PROVIDER: 'claude',
+  CLAUDE_MEM_PROVIDER: 'dashscope',
   CLAUDE_MEM_GEMINI_API_KEY: '',
   CLAUDE_MEM_GEMINI_API_URL: 'https://generativelanguage.googleapis.com/v1/models',
   CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
@@ -41,7 +41,7 @@ export const DEFAULT_SETTINGS = {
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
 
   // Mode Configuration
-  CLAUDE_MEM_MODE: 'code',
+  CLAUDE_MEM_MODE: 'code--zh',
 
   // Vector Search Configuration
   CLAUDE_MEM_EMBEDDING_FUNCTION: 'default',
