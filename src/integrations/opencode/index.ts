@@ -159,6 +159,8 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
   // Tracks which sessions have been initialized with the worker
   const initializedSessions = new Set<string>();
   const lastAssistantMessages = new Map<string, string>();
+  // Tracks the last assistant text sent as observation per session (for dedup)
+  const lastSentAssistantText = new Map<string, string>();
   // Stores messageID → text content accumulated from message.part.updated events.
   // Only consumed for assistant messages; user messages are handled via chat.message hook.
   const messageTexts = new Map<string, string>();
@@ -180,14 +182,16 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
   async function ensureSessionInitialized(sessionID: string, prompt?: string): Promise<string> {
     const contentSessionId = getContentSessionId(sessionID);
     if (!initializedSessions.has(sessionID)) {
-      initializedSessions.add(sessionID);
-      await workerPost(workerPort, '/api/sessions/init', {
+      const result = await workerPost(workerPort, '/api/sessions/init', {
         contentSessionId,
         project: projectName,
         prompt: prompt || lastUserPrompts.get(sessionID) || '',
       });
-      // Sync context at session start
-      await syncAgentsContext();
+      // Only mark initialized after worker confirms success
+      if (result !== null) {
+        initializedSessions.add(sessionID);
+        await syncAgentsContext();
+      }
     }
     return contentSessionId;
   }
@@ -311,13 +315,15 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
 
       if (!initializedSessions.has(sessionID)) {
         // First message: initialize session with real user text
-        initializedSessions.add(sessionID);
-        await workerPost(workerPort, '/api/sessions/init', {
+        const initResult = await workerPost(workerPort, '/api/sessions/init', {
           contentSessionId,
           project: projectName,
           prompt: strippedText,
         });
-        await syncAgentsContext();
+        if (initResult !== null) {
+          initializedSessions.add(sessionID);
+          await syncAgentsContext();
+        }
       } else {
         // Subsequent turns: record new prompt (worker increments prompt counter)
         await workerPost(workerPort, '/api/sessions/init', {
@@ -423,7 +429,9 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
               }
             }
             const lastText = lastAssistantMessages.get(sessionID) || '';
-            if (lastText) {
+            // Only send observation if text actually changed (dedup streaming updates)
+            if (lastText && lastText !== lastSentAssistantText.get(sessionID)) {
+              lastSentAssistantText.set(sessionID, lastText);
               const contentSessionId = await ensureSessionInitialized(sessionID);
               workerPostFireAndForget(workerPort, '/api/sessions/observations', {
                 contentSessionId,
@@ -498,6 +506,7 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
           sessionIds.delete(sessionID);
           initializedSessions.delete(sessionID);
           lastAssistantMessages.delete(sessionID);
+          lastSentAssistantText.delete(sessionID);
           lastUserPrompts.delete(sessionID);
           break;
         }
@@ -529,17 +538,37 @@ export const claudeMemPlugin: Plugin = async (ctx) => {
     tool: {
       claude_mem_search: tool({
         description:
-          'Search claude-mem memory database for past observations, decisions, and patterns across all sessions.',
+          'Search claude-mem memory database for past observations, decisions, and patterns. Scoped to current session by default; set session_id to "all" to search across all sessions.',
         args: {
           query: tool.schema.string().describe('Search query for memory lookup'),
+          session_id: tool.schema.string().optional().describe('Session ID to scope search. Defaults to current session. Use "all" for cross-session search.'),
         },
         async execute(args) {
           const query = args.query;
           if (!query) return 'Please provide a search query.';
 
+          const params = new URLSearchParams({
+            query,
+            limit: '10',
+            project: projectName,
+          });
+
+          // Scope to current session by default (matches Claude Code behavior)
+          const requestedSessionId = args.session_id;
+          if (requestedSessionId && requestedSessionId !== 'all') {
+            params.set('session_id', requestedSessionId);
+          } else if (!requestedSessionId) {
+            // Default: use the most recent active session
+            const activeSessionID = sessionIds.keys().next().value;
+            if (activeSessionID) {
+              params.set('session_id', getContentSessionId(activeSessionID));
+            }
+          }
+          // session_id === 'all': don't set session_id param, search all sessions
+
           const result = await workerGetText(
             workerPort,
-            `/api/search/observations?query=${encodeURIComponent(query)}&limit=10&project=${encodeURIComponent(projectName)}`,
+            `/api/search/observations?${params.toString()}`,
           );
 
           if (!result) return 'Memory search unavailable. Is the claude-mem worker running?';
