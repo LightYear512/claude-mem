@@ -564,8 +564,8 @@ export class BudgetController {
       enabled: settings.CLAUDE_MEM_BUDGET_ENABLED === 'true',
       preset: presetId,
       billingType: preset.billingType,
-      dailyLimitMicros: Math.round(parseFloat(settings.CLAUDE_MEM_BUDGET_DAILY_LIMIT || '1.00') * 1_000_000),
-      monthlyLimitMicros: Math.round(parseFloat(settings.CLAUDE_MEM_BUDGET_MONTHLY_LIMIT || '20.00') * 1_000_000),
+      dailyLimitMicros: Math.round((parseFloat(settings.CLAUDE_MEM_BUDGET_DAILY_LIMIT || '1.00') || 1.00) * 1_000_000),
+      monthlyLimitMicros: Math.round((parseFloat(settings.CLAUDE_MEM_BUDGET_MONTHLY_LIMIT || '20.00') || 20.00) * 1_000_000),
     };
 
     this.configCache = config;
