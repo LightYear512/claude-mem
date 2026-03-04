@@ -25,7 +25,7 @@ export const zhCN: TranslationDict = {
   'summary.learned': '学到了',
   'summary.completed': '完成了',
   'summary.nextSteps': '下一步',
-  'summary.sessionSummary': '会话摘要',
+  'summary.sessionSummary': 'Session Summary',
   'summary.sessionId': '会话 #{id}',
 
   // Observation Card
@@ -39,7 +39,7 @@ export const zhCN: TranslationDict = {
   'observation.session': '会话',
 
   // Prompt Card
-  'prompt.label': '提示',
+  'prompt.label': 'Prompt',
 
   // Theme Toggle
   'theme.light': '主题: 浅色 (点击切换深色)',

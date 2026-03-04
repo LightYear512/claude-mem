@@ -902,35 +902,35 @@ export function ContextSettingsModal({
                   value={formState.CLAUDE_MEM_MODE || 'code--zh'}
                   onChange={(e) => updateSetting('CLAUDE_MEM_MODE', e.target.value)}
                 >
-                  <option value="code--zh">中文 (Chinese) (Default)</option>
-                  <option value="code">English</option>
-                  <option value="code--ja">日本語 (Japanese)</option>
-                  <option value="code--ko">한국어 (Korean)</option>
-                  <option value="code--es">Español (Spanish)</option>
-                  <option value="code--pt-br">Português (Portuguese)</option>
-                  <option value="code--de">Deutsch (German)</option>
-                  <option value="code--fr">Français (French)</option>
-                  <option value="code--ru">Русский (Russian)</option>
-                  <option value="code--ar">العربية (Arabic)</option>
-                  <option value="code--it">Italiano (Italian)</option>
-                  <option value="code--nl">Nederlands (Dutch)</option>
-                  <option value="code--pl">Polski (Polish)</option>
-                  <option value="code--tr">Türkçe (Turkish)</option>
-                  <option value="code--vi">Tiếng Việt (Vietnamese)</option>
-                  <option value="code--th">ไทย (Thai)</option>
-                  <option value="code--id">Bahasa Indonesia</option>
-                  <option value="code--hi">हिन्दी (Hindi)</option>
-                  <option value="code--uk">Українська (Ukrainian)</option>
-                  <option value="code--cs">Čeština (Czech)</option>
-                  <option value="code--el">Ελληνικά (Greek)</option>
-                  <option value="code--he">עברית (Hebrew)</option>
-                  <option value="code--hu">Magyar (Hungarian)</option>
-                  <option value="code--ro">Română (Romanian)</option>
-                  <option value="code--sv">Svenska (Swedish)</option>
-                  <option value="code--da">Dansk (Danish)</option>
-                  <option value="code--fi">Suomi (Finnish)</option>
-                  <option value="code--no">Norsk (Norwegian)</option>
-                  <option value="code--bn">বাংলা (Bengali)</option>
+                  <option value="code--zh">中文 (默认)</option>
+                  <option value="code">English (英语)</option>
+                  <option value="code--ja">日本語 (日语)</option>
+                  <option value="code--ko">한국어 (韩语)</option>
+                  <option value="code--es">Español (西班牙语)</option>
+                  <option value="code--pt-br">Português (葡萄牙语)</option>
+                  <option value="code--de">Deutsch (德语)</option>
+                  <option value="code--fr">Français (法语)</option>
+                  <option value="code--ru">Русский (俄语)</option>
+                  <option value="code--ar">العربية (阿拉伯语)</option>
+                  <option value="code--it">Italiano (意大利语)</option>
+                  <option value="code--nl">Nederlands (荷兰语)</option>
+                  <option value="code--pl">Polski (波兰语)</option>
+                  <option value="code--tr">Türkçe (土耳其语)</option>
+                  <option value="code--vi">Tiếng Việt (越南语)</option>
+                  <option value="code--th">ไทย (泰语)</option>
+                  <option value="code--id">Bahasa Indonesia (印尼语)</option>
+                  <option value="code--hi">हिन्दी (印地语)</option>
+                  <option value="code--uk">Українська (乌克兰语)</option>
+                  <option value="code--cs">Čeština (捷克语)</option>
+                  <option value="code--el">Ελληνικά (希腊语)</option>
+                  <option value="code--he">עברית (希伯来语)</option>
+                  <option value="code--hu">Magyar (匈牙利语)</option>
+                  <option value="code--ro">Română (罗马尼亚语)</option>
+                  <option value="code--sv">Svenska (瑞典语)</option>
+                  <option value="code--da">Dansk (丹麦语)</option>
+                  <option value="code--fi">Suomi (芬兰语)</option>
+                  <option value="code--no">Norsk (挪威语)</option>
+                  <option value="code--bn">বাংলা (孟加拉语)</option>
                 </select>
               </FormField>
 
