@@ -115,8 +115,10 @@ export class ChromaMcpManager {
     // This also fixes Git Bash compatibility (#1062) since cmd.exe handles
     // Windows-native command resolution regardless of the calling shell.
     const isWindows = process.platform === 'win32';
-    const uvxSpawnCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'uvx';
-    const uvxSpawnArgs = isWindows ? ['/c', 'uvx', ...commandArgs] : commandArgs;
+    // Custom server uses `uv run ...`, official package uses `uvx ...`
+    const baseTool = this.useCustomServer ? 'uv' : 'uvx';
+    const uvxSpawnCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : baseTool;
+    const uvxSpawnArgs = isWindows ? ['/c', baseTool, ...commandArgs] : commandArgs;
 
     logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
       command: uvxSpawnCommand,
@@ -210,14 +212,66 @@ export class ChromaMcpManager {
   }
 
   /**
-   * Build the uvx command arguments based on current settings.
-   * In local mode: uses persistent client with local data directory.
-   * In remote mode: uses http client with configured host/port/auth.
+   * Whether the current configuration uses the custom chroma-mcp-server.py
+   * (for non-default embedding functions) instead of the official chroma-mcp package.
+   * Set by buildCommandArgs() and read by connectInternal() to choose uv vs uvx.
+   */
+  private useCustomServer: boolean = false;
+
+  /**
+   * Build the command arguments based on current settings.
+   *
+   * When CLAUDE_MEM_EMBEDDING_FUNCTION is non-default (e.g. dashscope:text-embedding-v3),
+   * uses the custom chroma-mcp-server.py which supports configurable embedding functions
+   * and does NOT require onnxruntime. Otherwise falls back to the official chroma-mcp
+   * package via uvx.
+   *
+   * In remote mode: uses http client with configured host/port/auth (official package only).
    */
   private buildCommandArgs(): string[] {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const chromaMode = settings.CLAUDE_MEM_CHROMA_MODE || 'local';
+    const embeddingConfig = settings.CLAUDE_MEM_EMBEDDING_FUNCTION || 'default';
     const pythonVersion = process.env.CLAUDE_MEM_PYTHON_VERSION || settings.CLAUDE_MEM_PYTHON_VERSION || '3.13';
+
+    // Non-default embedding in local mode → use custom chroma-mcp-server.py
+    // This avoids the onnxruntime dependency required by the official chroma-mcp's
+    // DefaultEmbeddingFunction, and enables DashScope/sentence-transformers models.
+    if (chromaMode === 'local' && embeddingConfig !== 'default') {
+      this.useCustomServer = true;
+
+      // Resolve the custom server script path relative to this bundle's location.
+      // In the built plugin: plugin/scripts/chroma-mcp-server.py (sibling of worker-service.cjs)
+      const serverScript = path.join(__dirname, 'chroma-mcp-server.py').replace(/\\/g, '/');
+
+      const args = [
+        'run', '--python', pythonVersion,
+        '--with', 'chromadb>=1.0.0',
+        '--with', 'mcp>=1.0.0',
+        '--with', 'requests>=2.31.0',
+        serverScript,
+        '--data-dir', DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/'),
+        '--embedding-config', embeddingConfig,
+      ];
+
+      // DashScope remote embedding needs API key
+      if (embeddingConfig.startsWith('dashscope:')) {
+        const apiKey = settings.CLAUDE_MEM_DASHSCOPE_API_KEY || '';
+        if (apiKey) {
+          args.push('--api-key', apiKey);
+        }
+      }
+
+      logger.info('CHROMA_MCP', 'Using custom chroma-mcp-server.py', {
+        embedding: embeddingConfig,
+        script: serverScript
+      });
+
+      return args;
+    }
+
+    // Reset flag for non-custom paths
+    this.useCustomServer = false;
 
     if (chromaMode === 'remote') {
       const chromaHost = settings.CLAUDE_MEM_CHROMA_HOST || '127.0.0.1';
@@ -254,7 +308,7 @@ export class ChromaMcpManager {
       return args;
     }
 
-    // Local mode: persistent client with data directory
+    // Local mode with default embedding: use official chroma-mcp package
     return [
       '--python', pythonVersion,
       'chroma-mcp',
@@ -585,6 +639,16 @@ export class ChromaMcpManager {
     for (const [key, value] of Object.entries(process.env)) {
       if (value !== undefined) {
         baseEnv[key] = value;
+      }
+    }
+
+    // Inject DashScope API key for custom chroma-mcp-server.py
+    // The server reads DASHSCOPE_API_KEY env var as fallback when --api-key is not provided
+    if (this.useCustomServer) {
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+      const apiKey = settings.CLAUDE_MEM_DASHSCOPE_API_KEY || '';
+      if (apiKey) {
+        baseEnv.DASHSCOPE_API_KEY = apiKey;
       }
     }
 
