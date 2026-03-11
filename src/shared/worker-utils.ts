@@ -172,6 +172,29 @@ async function checkWorkerVersion(): Promise<void> {
 
 
 /**
+ * Wait for worker to be fully initialized (DB + search routes ready).
+ * Polls /api/readiness which returns 200 only after core initialization completes.
+ * Used by context handler to avoid getting empty results during startup.
+ */
+export async function waitForWorkerReady(timeoutMs: number = 30000): Promise<boolean> {
+  const port = getWorkerPort();
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const response = await fetchWithTimeout(
+        `http://127.0.0.1:${port}/api/readiness`, {}, HEALTH_CHECK_TIMEOUT_MS
+      );
+      if (response.ok) return true;
+    } catch {
+      // Expected during startup - will retry
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  logger.warn('SYSTEM', 'Worker readiness timeout, proceeding with potentially empty context', { timeoutMs });
+  return false;
+}
+
+/**
  * Ensure worker service is running
  * Quick health check - returns false if worker not healthy (doesn't block)
  * Port might be in use by another process, or worker might not be started yet

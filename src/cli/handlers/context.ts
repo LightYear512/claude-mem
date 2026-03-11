@@ -6,7 +6,7 @@
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
+import { ensureWorkerRunning, waitForWorkerReady, getWorkerPort } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
@@ -27,6 +27,11 @@ export const contextHandler: EventHandler = {
         exitCode: HOOK_EXIT_CODES.SUCCESS
       };
     }
+
+    // Wait for worker to be fully initialized (DB + search routes).
+    // Without this, first session after boot gets empty context because
+    // /api/context/inject returns empty before search routes are registered.
+    await waitForWorkerReady();
 
     const cwd = input.cwd ?? process.cwd();
     const context = getProjectContext(cwd);
