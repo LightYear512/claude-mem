@@ -118,7 +118,12 @@ export class ChromaMcpManager {
     // Custom server uses `uv run ...`, official package uses `uvx ...`
     const baseTool = this.useCustomServer ? 'uv' : 'uvx';
     const uvxSpawnCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : baseTool;
-    const uvxSpawnArgs = isWindows ? ['/c', baseTool, ...commandArgs] : commandArgs;
+    // Windows cmd.exe interprets `>` as redirection (e.g., `chromadb>=1.0.0` redirects
+    // stderr to file `=1.0.0`). Escape with `^` so cmd.exe passes the literal `>` to uv.
+    const escapedArgs = isWindows
+      ? commandArgs.map(a => a.includes('>') ? a.replace(/>/g, '^>') : a)
+      : commandArgs;
+    const uvxSpawnArgs = isWindows ? ['/c', baseTool, ...escapedArgs] : commandArgs;
 
     logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
       command: uvxSpawnCommand,
